@@ -113,6 +113,24 @@ function getJson(url) {
     await shot('sc1_envelope.png');
     console.log('1) 信封封面 -> _dev/sc1_envelope.png');
 
+    /* 时间轴实测：轻触那一刻起开始采，记录四个时刻 ——
+       主场景出现 / 信息流开始淡出 / 信开始升起 / 信升到位。
+       用来验收"信息流持续 9 秒"这条需求（代码里写 9 不算，得真的等 9 秒）。
+       这里让它后台跑（不 await），后面再取结果。 */
+    await evaluate('window.__tl=null;(function(){' +
+      'var m=window.__moonfest, f=m.flow, lt=m.letter;' +
+      'var t0=performance.now(), T={};' +
+      'function tick(now){' +
+      '  var el=+((now-t0)/1000).toFixed(2);' +
+      '  if(T.主场景===undefined && f.reveal>=0.999) T.主场景=el;' +
+      '  if(T.开始淡出===undefined && f.dim<1) T.开始淡出=el;' +
+      '  if(T.信升起===undefined && lt && lt.active) T.信升起=el;' +
+      '  if(T.信升起!==undefined && T.信到位===undefined && lt.progress>=1) T.信到位=el;' +
+      '  if(el<16 && T.信到位===undefined) requestAnimationFrame(tick);' +
+      '  else window.__tl=T;' +
+      '}' +
+      'requestAnimationFrame(tick);})();"started"');
+
     /* 点一下：拆封 */
     await evaluate('(function(){var c=document.getElementById("scene");' +
       'c.dispatchEvent(new PointerEvent("pointerdown",{clientX:195,clientY:500,pointerId:1,bubbles:true,cancelable:true}));' +
@@ -185,10 +203,29 @@ function getJson(url) {
       'return JSON.stringify({信息流秒数:L.flowSeconds,升起用时:L.duration,信已出场:!!window.__moonfest.letter.active});})()');
     console.log('信的配置: ' + wait);
 
-    /* 等信升起来（信息流 9s + 升起 2s，前面已经花掉一些） */
-    await sleep(9000);
-    await shot('sc8_letter.png');
-    console.log('8) 信 -> _dev/sc8_letter.png');
+    /* 等信开始升起 —— 抓一张"正在升起"的（之前只拍了终态，看不出是升上来的） */
+    let caught = false;
+    for (let i = 0; i < 80 && !caught; i++) {
+      const pr = await evaluate('(function(){var lt=window.__moonfest.letter;' +
+        'return lt.active?+lt.progress.toFixed(2):-1;})()');
+      if (pr > 0.3 && pr < 0.95) {
+        await shot('sc8_letter_rise.png');
+        console.log('8) 信升起中（进度 ' + pr + '） -> _dev/sc8_letter_rise.png');
+        caught = true;
+      } else {
+        await sleep(200);
+      }
+    }
+    if (!caught) console.log('8) （没抓到升起中的帧，可能已经升完）');
+
+    await sleep(3000);
+    await shot('sc9_letter.png');
+    console.log('9) 信 -> _dev/sc9_letter.png');
+
+    /* 时间轴实测结果（轻触那一刻就开始后台采了，到这里已经采完） */
+    console.log('时间轴(秒，自轻触起): ' + await evaluate('JSON.stringify(window.__tl)') +
+      '\n    期待：主场景≈1.9 / 开始淡出≈10.1 / 信升起≈10.9 / 信到位≈12.9');
+
     console.log('信的状态: ' + await evaluate('(function(){var m=window.__moonfest;' +
       'var lt=m.letter; return JSON.stringify({出场:lt.active,进度:+lt.progress.toFixed(2),完成:lt.done,' +
       '信息流已淡出:m.flow.dim===0,排版字号:(lt._fit&&lt._fit.size)||null,' +
@@ -198,8 +235,8 @@ function getJson(url) {
     /* 桌面视口也量一次。换视口会触发 resize，信的排版会重新试字号。 */
     await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
     await sleep(2500);
-    await shot('sc9_desktop.png');
-    console.log('9) 桌面 1440x900 -> _dev/sc9_desktop.png');
+    await shot('sc10_desktop.png');
+    console.log('10) 桌面 1440x900 -> _dev/sc10_desktop.png');
     console.log('桌面信帧时(ms): ' + JSON.stringify(await evaluate(fpsExpr)));
     console.log('桌面信排版: ' + await evaluate('(function(){var lt=window.__moonfest.letter;' +
       'return JSON.stringify({字号:lt._fit&&lt._fit.size,行数:lt._fit&&lt._fit.lines.length,' +
