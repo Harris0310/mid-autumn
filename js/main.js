@@ -90,10 +90,27 @@
 
   function bindOrbit() {
     if (!O.enabled || !canvas.addEventListener) return;
-    canvas.addEventListener('pointerdown', onDown);
-    canvas.addEventListener('pointermove', onMove);
-    canvas.addEventListener('pointerup', onUp);
-    canvas.addEventListener('pointercancel', onUp);
+
+    if (window.PointerEvent) {
+      canvas.addEventListener('pointerdown', onDown);
+      canvas.addEventListener('pointermove', onMove);
+      canvas.addEventListener('pointerup', onUp);
+      canvas.addEventListener('pointercancel', onUp);
+      return;
+    }
+
+    /* 兜底：部分较老的 WebView（比如某些安卓微信内核）没有 PointerEvent，
+       退回 touch 事件，保证链接分享出去以后还是一样能拖着转。 */
+    canvas.addEventListener('touchstart', function (e) {
+      if (e.touches.length === 1) onDown(e.touches[0]);
+    }, { passive: true });
+    canvas.addEventListener('touchmove', function (e) {
+      if (e.touches.length !== 1) return;
+      onMove(e.touches[0]);
+      if (e.cancelable) e.preventDefault();
+    }, { passive: false });
+    canvas.addEventListener('touchend', onUp);
+    canvas.addEventListener('touchcancel', onUp);
   }
 
   function updateOrbit(dt) {
