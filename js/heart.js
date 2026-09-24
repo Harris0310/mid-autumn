@@ -222,17 +222,24 @@
     return R.rows[i];
   };
 
-  /* 配色：粉白 0.2% / 亮红 1.8% / 中红 12.4% / 深红 85.6%（实测比例） */
+  /* 配色：以中国红为主体（对齐 heart.cpp 的 RGB(255,33,33)），
+   * 少量亮红、粉、粉白高光点缀。
+   *
+   * 注意这里和 heart_particle.cpp 的取值不同。那套深红（主体 R 只有 76~152）
+   * 是从一张暗调参考图里实测出来的，放在纯黑背景上会发灰发闷，看不出原版
+   * 那种"亮红实心"的劲儿 —— 所以整体提亮，保留同样的层次比例。 */
   HeartParticles.prototype._color = function (k) {
     var st = this.H.colorStops, r = this.rnd(), R, G, B;
-    if (r < st[0]) {
-      R = 228 + (this.rnd() * 28 | 0); G = 150 + (this.rnd() * 46 | 0); B = 158 + (this.rnd() * 48 | 0);
-    } else if (r < st[1]) {
-      R = 208 + (this.rnd() * 40 | 0); G = 100 + (this.rnd() * 55 | 0); B = 106 + (this.rnd() * 58 | 0);
-    } else if (r < st[2]) {
-      R = 150 + (this.rnd() * 56 | 0); G = 58 + (this.rnd() * 50 | 0); B = 62 + (this.rnd() * 52 | 0);
-    } else {
-      R = 76 + (this.rnd() * 76 | 0); G = 6 + (this.rnd() * 30 | 0); B = 10 + (this.rnd() * 32 | 0);
+    if (r < st[0]) {                 /* 粉白高光 0.5% */
+      R = 255; G = 180 + (this.rnd() * 45 | 0); B = 195 + (this.rnd() * 45 | 0);
+    } else if (r < st[1]) {          /* 粉 4.5% */
+      R = 255; G = 120 + (this.rnd() * 55 | 0); B = 130 + (this.rnd() * 55 | 0);
+    } else if (r < st[2]) {          /* 亮红 17% */
+      R = 255; G = 60 + (this.rnd() * 50 | 0); B = 70 + (this.rnd() * 50 | 0);
+    } else {                         /* 主体：中国红 78% */
+      R = 224 + (this.rnd() * 31 | 0);
+      G = 16 + (this.rnd() * 48 | 0);
+      B = 18 + (this.rnd() * 48 | 0);
     }
     if (k !== 1) {
       R = Math.min(255, R * k | 0);

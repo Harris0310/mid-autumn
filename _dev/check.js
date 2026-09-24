@@ -100,26 +100,40 @@ const heart = new sb.HeartParticles(c);
 ok(heart.count > 5000, '粒子数 = ' + heart.count);
 ok(heart.buckets.length < 900, '颜色桶 = ' + heart.buckets.length + '（即每帧 fill 次数）');
 
-/* 9. 字幕在任意屏幕比例下的几何性质。
- *    注意槽位是一个整体匀速平移的等距点阵，所以「某一瞬间顶端刚好空着」是
- *    正常的 —— 空档一定小于一个行距，下一秒就被上移的行填上。要断言的是：
- *      a) 间距恒定（等距点阵）
- *      b) 顶部空档 < 一个行距
- *      c) 行程覆盖整个屏幕高度（每行都会从最底滚到最顶）
- *      d) 屏上同时可见的行数足够 */
+/* 9. 字幕几何。要同时满足两个看似矛盾的要求：
+ *      a) 间距必须随机 —— 这是"视觉上的不规律感"的来源
+ *      b) 所有行速度一致，于是相对间距一旦定下就永不改变 ——
+ *         所以不规律会一路保持到顶，且绝不互相追上、重叠 */
 const rnd = sb.MoonfestRandom(1);
+const SL = c.text.scroll;
 for (const [w, h, k] of [[1920, 1080, 1.2], [390, 844, 0.45], [1440, 900, 1.0], [2560, 1440, 1.6]]) {
+  const tag = '视口 ' + w + 'x' + h + '：';
   const f = new sb.FlowText(c, rnd);
   f.layout(w, h, k, w / 2);
+
   const ys = f.slots.map(s => s.y).sort((a, b) => a - b);
-  const gaps = [...new Set(ys.slice(1).map((v, i) => +(v - ys[i]).toFixed(6)))];
-  const gap = gaps[0];
-  const visible = ys.filter(y => y >= 0 && y <= h).length;
-  ok(gaps.length === 1, '视口 ' + w + 'x' + h + '：间距恒定 gap=' + gap);
-  ok(ys[0] < gap, '视口 ' + w + 'x' + h + '：顶部空档 ' + ys[0].toFixed(1) + ' < 一个行距');
-  ok(f.span >= h, '视口 ' + w + 'x' + h + '：行程 ' + f.span.toFixed(0) + ' 覆盖全高');
-  ok(visible >= 6 && visible <= 8, '视口 ' + w + 'x' + h + '：屏上同时可见 ' + visible + ' 行（目标 6~8）');
-  ok(f.size >= 16 && f.size <= c.text.scroll.maxSize + 0.001, '视口 ' + w + 'x' + h + '：字号 ' + f.size.toFixed(1) + 'px 可读');
+  const gaps = ys.slice(1).map((v, i) => v - ys[i]);
+  const uniq = [...new Set(gaps.map(g => +g.toFixed(4)))];
+  const gMin = f.size * SL.gapMinRatio, gMax = f.size * SL.gapMaxRatio;
+
+  ok(uniq.length > 1, tag + '间距是随机的（' + uniq.length + ' 种不同值）');
+  ok(gaps.every(g => g >= gMin - 1e-6 && g <= gMax + 1e-6),
+     tag + '间距都落在 [' + gMin.toFixed(0) + ', ' + gMax.toFixed(0) + '] 内');
+  ok(f.slots.every(s => s.y > f.top), tag + '布局后所有行都在 top 之下（首帧无回收）');
+  const visible = ys.filter(v => v >= 0 && v <= h).length;
+  ok(visible >= 4, tag + '屏上同时可见 ' + visible + ' 行');
+  ok(f.size >= 16 && f.size <= SL.maxSize + 0.001, tag + '字号 ' + f.size.toFixed(1) + 'px 可读');
+
+  /* 滚一段（短到没有行出顶），随机间距必须原样保持 */
+  const tExit = (ys[0] - f.top) / f.speed;
+  const steps = Math.max(1, Math.floor(tExit * 0.4 * 60));
+  for (let i = 0; i < steps; i++) f.update(1 / 60);
+  const ys2 = f.slots.map(s => s.y).sort((a, b) => a - b);
+  const gaps2 = ys2.slice(1).map((v, i) => v - ys2[i]);
+  ok(gaps2.every((g, i) => Math.abs(g - gaps[i]) < 1e-6),
+     tag + '滚动 ' + (steps / 60).toFixed(2) + 's 后随机间距原样保持（速度一致，不会互相追上）');
+  ok(Math.abs((ys[ys.length - 1] - ys[0]) - (ys2[ys2.length - 1] - ys2[0])) < 1e-6,
+     tag + '整体跨度不变');
 }
 
 /* 10. 3D：俯仰应产生纵向前缩，偏航应产生横向前缩，且粒子不多不少正好画一遍 */

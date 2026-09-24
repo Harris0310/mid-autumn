@@ -3,16 +3,17 @@
  *
  * 效果：多句文案随机抽取，一行一行自下而上匀速滚动（字幕式），粉色。
  *
- * 【为什么用固定槽位，而不是"定时生成 + 回收"】
- *   所有槽位共享同一个速度，彼此的垂直间距恒等于 gap；槽位移出顶部时不是
- *   销毁，而是整段 +span 回到最底部并换一句。于是屏上的文字总量恒定
- *   （这就是「输出量都差不多」）—— 句子长短只会影响横向宽度，不会让文字
- *   忽多忽少，也不会出现重叠或空档。
+ * 【为什么"速度一致"反而要做出不规律】
+ *   每一行新出现的位置，是在上一行下方 gapMin~gapMax 倍字号之间的一个
+ *   随机距离 —— 所以屏幕上的疏密是乱的，出现时间也乱，这就是视觉上的
+ *   不规律感。
+ *   但所有行速度完全一致，于是任意两行的相对间距一旦定下就永不改变：
+ *   这种不规律会原封不动地一路保持到顶，绝不会互相追上或重叠。
+ *   而间距又是在一个区间内随机取值，总体文字量依然稳定。
  *
- * 【为什么用视口坐标系而不是设计坐标系】
- *   爱心按 contain 缩放，在竖屏手机上设计框只占屏幕中间一半，字幕会被困在
- *   那条带子里。字幕改为直接铺满整个视口高度，任何比例下都从上滚到下。
- *   字号/行距/速度按同一个 k 缩放，所以和爱心的比例关系保持不变。
+ * 【坐标系】用视口坐标（1 单位 = 1 CSS 像素）而不是设计坐标：
+ *   爱心按 contain 缩放，竖屏手机上设计框只占屏幕中间一半，字幕会被困在
+ *   那条带子里。改成直接铺满整个视口高度，任何比例下都从上滚到下。
  * ========================================================================== */
 
 (function (global) {
@@ -25,16 +26,14 @@
     this.t = 0;
     this._last = -1;
     this.slots = [];
-    this.size = 0; this.gap = 0; this.speed = 0;
-    this.top = 0; this.span = 0; this.count = 0;
-    this.cx = 0;
+    this.nextY = 0;
+    this.size = 0; this.speed = 0; this.top = 0;
+    this.vh = 0; this.cx = 0;
+    this.gapMin = 0; this.gapMax = 0;
   }
 
-  /* 每次视口变化时重排：k 是设计坐标 -> CSS 像素的缩放比。
-     字号不直接取 sc.size * k —— 竖屏手机上 k 只有 0.45，那样字号会掉到
-     13px 左右、屏上挤十几行。这里把字号夹到 [视口高度 × minViewportRatio,
-     maxSize]，行距与速度随之按比例推导，于是"同时可见几行"在任何屏幕上
-     都是常数。 */
+  /* 字号 = 设计字号 × 缩放比，但夹在 [视口高度 × minViewportRatio, maxSize]
+     之间。竖屏手机上 k 只有 0.45，不夹的话字号会掉到 13px、屏上挤十几行。 */
   FlowText.prototype._scale = function (vh, k) {
     var sc = this.sc;
     var size = sc.size * k;
@@ -45,29 +44,9 @@
     return size;
   };
 
-  FlowText.prototype.layout = function (vw, vh, k, cx) {
-    var sc = this.sc;
-    this.cx = cx;
-    this.size = this._scale(vh, k);
-    this.gap = this.size * sc.gapRatio;
-    this.speed = this.size * sc.speedRatio;
-
-    /* 上下各留两个行高的缓冲，保证淡入淡出不在屏幕边界上被切断 */
-    this.top = -this.size * 2;
-    var need = vh + this.size * 4;
-    var n = Math.max(1, Math.ceil(need / this.gap));
-    this.span = n * this.gap;   /* 取整到 gap 的整数倍，间距永不漂移 */
-    this.count = n;
-
-    this.slots = [];
-    for (var i = 0; i < n; i++) {
-      this.slots.push({
-        /* 开场就均匀铺满整条行程，而不是从底部一行行慢慢爬上来 */
-        y: this.top + this.span - i * this.gap,
-        text: this._pick(),
-        phase: this.rnd()
-      });
-    }
+  /* 随机行距 —— 不规律感的来源 */
+  FlowText.prototype._randGap = function () {
+    return this.gapMin + this.rnd() * (this.gapMax - this.gapMin);
   };
 
   /* 随机取一句；避免与上一次完全相同 */
@@ -81,6 +60,33 @@
     return pool[i];
   };
 
+  /* 每次视口变化时重排 */
+  FlowText.prototype.layout = function (vw, vh, k, cx) {
+    var sc = this.sc;
+    this.cx = cx;
+    this.vh = vh;
+    this.size = this._scale(vh, k);
+    this.speed = this.size * sc.speedRatio;
+    this.gapMin = this.size * sc.gapMinRatio;
+    this.gapMax = this.size * sc.gapMaxRatio;
+
+    /* 上下各留两个行高的缓冲，淡入淡出不在屏幕边界上被切断 */
+    this.top = -this.size * 2;
+
+    /* 用随机间距从下往上铺满整条行程，开场就是满屏 */
+    var y = this.top + (vh + this.size * 6);
+    var slots = [];
+    while (y > this.top && slots.length < 240) {
+      slots.push({ y: y, text: this._pick(), phase: this.rnd() });
+      y -= this._randGap();
+    }
+    if (!slots.length) slots.push({ y: this.top, text: this._pick(), phase: this.rnd() });
+
+    this.slots = slots;
+    /* 下一行的落点：始终在最下面那一行之下一个随机间距处 */
+    this.nextY = slots[0].y + this._randGap();
+  };
+
   FlowText.prototype.update = function (dt) {
     var sc = this.sc;
     if (!sc.enabled || !this.slots.length) return;
@@ -91,20 +97,27 @@
       var s = this.slots[i];
       s.y -= move;
       if (s.y < this.top) {
-        s.y += this.span;        /* 回到最底部，间距保持不变 */
-        s.text = this._pick();   /* 换一句新的 */
+        /* 从顶部出去的行直接落到底部下一个随机位置，并换一句新的。
+           所有行速度一致，所以"随机间距"会被原样带上去。 */
+        s.y = this.nextY;
+        this.nextY += this._randGap();
+        s.text = this._pick();
         s.phase = this.rnd();
       }
     }
   };
 
-  /* 底部淡入 / 顶部淡出：u=0 在顶部，u=1 在底部 */
+  /* 底部淡入 / 顶部淡出。行距不再固定，所以按屏幕边界来度量。 */
   FlowText.prototype._alphaAt = function (y) {
     var sc = this.sc;
-    var u = (y - this.top) / this.span;
-    if (u < 0) u = 0; else if (u > 1) u = 1;
-    var fin  = Math.min(1, (1 - u) / sc.fadeIn);
-    var fout = Math.min(1, u / sc.fadeOut);
+    var finPx = this.vh * sc.fadeIn;
+    var foutPx = this.vh * sc.fadeOut;
+
+    var fin = finPx > 0 ? (this.vh - y) / finPx : 1;
+    var fout = foutPx > 0 ? (y + foutPx) / foutPx : 1;
+    if (fin > 1) fin = 1; else if (fin < 0) fin = 0;
+    if (fout > 1) fout = 1; else if (fout < 0) fout = 0;
+
     return Math.min(fin, fout) * sc.alpha;
   };
 
