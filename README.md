@@ -3,18 +3,41 @@
 一个纯静态的中秋祝福页面：**可以转着看的 3D 镂空跳动爱心** + **自下而上流动的字**。
 无构建、无依赖，双击 `index.html` 即可运行。
 
-## 运行
+## 本地看效果（开发用）
+
+双击 `index.html` 即可。个别浏览器对 `file://` 有限制时，才需要起一个临时静态服务：
 
 ```bash
-# 方式一：直接打开
-start index.html
-
-# 方式二：起个本地服务（推荐，避免个别浏览器对本地文件的限制）
-python -m http.server 8080
-# 然后访问 http://localhost:8080
+python -m http.server 8080   # 然后访问 http://localhost:8080
 ```
 
 调试用：网址后加 `?t=1.2` 可把画面冻结在第 1.2 秒，方便截图核对。
+
+## 发给别人（微信 / 短信）
+
+**必须先把页面放到一个公网 HTTPS 地址上。** 微信点开链接，是它内置的浏览器
+去网上取这个页面 —— 取不到你电脑上的文件。所以「我本地能打开」不等于
+「别人点得开」。
+
+好消息：这件事**不需要你跑任何服务、装任何东西**。这个项目是纯静态的
+（没有构建步骤），交给 Cloudflare Pages 托管静态文件就行。
+
+### 部署到 Cloudflare Pages
+
+1. Cloudflare 面板 → **Workers & Pages** → Create → **Pages** → **Connect to Git**
+2. 授权 GitHub，选中 `Harris0310/mid-autumn`
+3. 构建设置（**没有构建，三项照抄**）：
+   - Framework preset：`None`
+   - Build command：**留空**
+   - Build output directory：`/`
+4. Save and Deploy → 先给你一个 `*.pages.dev` 地址，点开确认效果
+5. 确认没问题后 → **Custom domains** → 填 `moon.datacy.cn`
+   - datacy.cn 的 DNS 就在你同一个 Cloudflare 账号里，它会自动加好 CNAME
+     并签好证书，不用手动配
+6. 等一两分钟，`https://moon.datacy.cn` 就能发微信了
+
+> Cloudflare Pages 免费版**支持私有仓库**（GitHub Pages 免费版不支持，
+> 而且国内访问不稳，所以不用它）。
 
 ## 3D 与视角
 
