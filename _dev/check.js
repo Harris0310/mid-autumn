@@ -15,44 +15,68 @@ for (const m of html.matchAll(/(?:src|href)="([^"]+)"/g)) {
 
 /* 2. 加载顺序 */
 const scripts = [...html.matchAll(/<script src="([^"]+)"/g)].map(m => m[1]);
-ok(scripts.length === 6, '脚本数量 = 6（实际 ' + scripts.length + '）');
+ok(scripts.length === 7, '脚本数量 = 7（实际 ' + scripts.length + '）');
 ok(scripts[0].endsWith('config.js'), 'config.js 最先加载');
 ok(scripts[scripts.length - 1].endsWith('main.js'), 'main.js 最后加载');
 ok(/id="scene"/.test(html), 'HTML 里有 id="scene"');
 
-/* 3. 迷你 DOM：让 main.js 走 ?t= 静帧分支并真的画一帧 */
-const counts = { fill: 0, fillText: 0, arc: 0, stroke: 0 };
-const canvasStub = {
-  clientWidth: 800, clientHeight: 900, width: 0, height: 0,
-  addEventListener() {},
-  setPointerCapture() {},
-  getContext() {
-    return {
-      setTransform() {}, save() {}, restore() {}, translate() {}, scale() {}, clearRect() {},
-      beginPath() {}, moveTo() {}, lineTo() {}, arcTo() {}, closePath() {}, setLineDash() {},
-      arc() { counts.arc++; }, fill() { counts.fill++; }, stroke() { counts.stroke++; },
-      measureText: t => ({ width: [...t].length * 30 }),
-      fillText() { counts.fillText++; },
-      createLinearGradient: () => ({ addColorStop() {} }),
-      fillStyle: '', strokeStyle: '', lineWidth: 1, font: '', textAlign: '', textBaseline: '',
-      shadowColor: '', globalAlpha: 1, shadowBlur: 0
-    };
-  }
-};
-
-const sb = {}; sb.window = sb; sb.console = console;
-sb.document = { getElementById: id => (id === 'scene' ? canvasStub : null) };
-sb.location = { search: '?t=0.5' };
-sb.addEventListener = () => {};
-sb.devicePixelRatio = 1;
-sb.matchMedia = () => ({ matches: false });
-sb.requestAnimationFrame = () => {};
-sb.innerWidth = 800; sb.innerHeight = 900;
-
-vm.createContext(sb);
-for (const f of scripts) {
-  vm.runInContext(fs.readFileSync(path.join(ROOT, f), 'utf8'), sb, { filename: f });
+/* 3. 迷你 DOM：让 main.js 走 ?t= 静帧分支并真的画一帧。
+       measureText 按当前 ctx.font 的字号算宽（中文 1em、其余 0.55em），
+       和 flowtext.js / letter.js 的估宽口径一致 —— 不然信自动排版测不准。 */
+function makeCtx(counts, log) {
+  return {
+    setTransform() {}, save() {}, restore() {}, translate() {}, scale() {}, clearRect() {},
+    beginPath() {}, moveTo() {}, lineTo() {}, arcTo() {}, closePath() {}, setLineDash() {},
+    arc() { if (counts) counts.arc++; },
+    fill() { if (counts) counts.fill++; },
+    stroke() { if (counts) counts.stroke++; },
+    fillText(t) { if (counts) counts.fillText++; if (log) log.push(t); },
+    drawImage() { if (counts) counts.image = (counts.image || 0) + 1; },
+    createLinearGradient: () => ({ addColorStop() {} }),
+    createRadialGradient: () => ({ addColorStop() {} }),
+    fillRect() {},
+    measureText(t) {
+      const m = /(\d+(?:\.\d+)?)px/.exec(this.font);
+      const size = m ? parseFloat(m[1]) : 30;
+      return { width: [...t].reduce((a, ch) => a + (ch.charCodeAt(0) > 0x2e7f ? 1 : 0.55), 0) * size };
+    },
+    fillStyle: '', strokeStyle: '', lineWidth: 1, font: '', textAlign: '', textBaseline: '',
+    shadowColor: '', globalAlpha: 1, shadowBlur: 0, shadowOffsetY: 0
+  };
 }
+
+function makeSandbox(search, counts, log) {
+  const canvas = {
+    clientWidth: 800, clientHeight: 900, width: 0, height: 0,
+    addEventListener() {},
+    setPointerCapture() {},
+    getContext() { return makeCtx(counts, log); }
+  };
+  const s = {};
+  s.window = s; s.console = console;
+  s.document = {
+    getElementById: id => (id === 'scene' ? canvas : null),
+    /* 信纸会把自己的静态部分缓存成一张离屏画布（见 letter.js） */
+    createElement: () => ({ width: 0, height: 0, getContext: () => makeCtx(counts, log) })
+  };
+  s.location = { search: search };
+  s.addEventListener = () => {};
+  s.devicePixelRatio = 1;
+  s.matchMedia = () => ({ matches: false });
+  s.requestAnimationFrame = () => {};
+  s.innerWidth = 800; s.innerHeight = 900;
+  vm.createContext(s);
+  for (const f of scripts) {
+    vm.runInContext(fs.readFileSync(path.join(ROOT, f), 'utf8'), s, { filename: f });
+  }
+  s.__canvas = canvas;
+  return s;
+}
+
+const counts = { fill: 0, fillText: 0, arc: 0, stroke: 0 };
+const drawn = [];
+const sb = makeSandbox('?t=0.5', counts, drawn);
+const canvasStub = sb.__canvas;
 
 /* 4. 模块导出 */
 ok(!!sb.MOONFEST, 'window.MOONFEST 已导出');
@@ -61,12 +85,14 @@ ok(typeof sb.HeartParticles === 'function', 'window.HeartParticles 已导出');
 ok(typeof sb.HeartParticles.beatScale === 'function', 'HeartParticles.beatScale 已导出');
 ok(typeof sb.FlowText === 'function', 'window.FlowText 已导出');
 ok(typeof sb.Ambient === 'function', 'window.Ambient 已导出');
+ok(typeof sb.Letter === 'function', 'window.Letter 已导出');
 
 /* 5. 端到端：main.js 真的画了一帧 */
 ok(canvasStub.width === 800 && canvasStub.height === 900, 'canvas 后备缓冲已按 dpr 设置');
 ok(counts.fill > 0, '爱心已提交 ' + counts.fill + ' 次 fill');
 ok(counts.arc > 5000, '粒子实际参与绘制: ' + counts.arc + ' 个');
 ok(counts.fillText > 0, '字幕实际绘制 ' + counts.fillText + ' 行');
+ok(drawn.indexOf(sb.MOONFEST.letter.greeting) < 0, '?t=0.5 时信还没出现（时间轴没跑过头）');
 
 /* 6. 配置自洽 */
 const c = sb.MOONFEST;
@@ -125,6 +151,21 @@ for (const [w, h, k] of [[1920, 1080, 1.2], [390, 844, 0.45], [1440, 900, 1.0], 
   ok(f.items.length >= 5, tag + '首帧就预填 ' + f.items.length + ' 条（满屏，不用等飘上来）');
   ok(f.items.every(it => it.x >= 0 && it.x <= w), tag + '横向落点都在屏内');
 
+  /* 长句子不许顶出屏幕：字号会被按宽度夹住。
+     宽度一律用 flowtext.js 自己的估算函数，两边口径必须一致。 */
+  const estW = sb.FlowText.estWidth;
+  const probeW = new sb.FlowText(c, rnd);
+  probeW.layout(w, h, k);
+  probeW.items.length = 0;
+  const wide = [];
+  for (let i = 0; i < 200; i++) {
+    const it = probeW._emit();
+    wide.push(estW(it.text, it.size) / w);
+  }
+  ok(Math.max(...wide) <= SL.maxWidthRatio + 1e-6,
+     tag + '最宽的文案占屏宽 ' + (Math.max(...wide) * 100).toFixed(0) + '%（上限 ' +
+     (SL.maxWidthRatio * 100).toFixed(0) + '%）');
+
   const sizes = f.items.map(it => it.size);
   const sMin = Math.min(...sizes), sMax = Math.max(...sizes);
   ok(sMin >= base * SL.sizeMin - 1e-6 && sMax <= base * SL.sizeMax + 1e-6,
@@ -135,13 +176,14 @@ for (const [w, h, k] of [[1920, 1080, 1.2], [390, 844, 0.45], [1440, 900, 1.0], 
   const spds = f.items.map(it => it.spd / f.speed);
   ok(spds.every(v => v === 1), tag + '所有文案速度完全一致（用户要的"往上走速度一样"）');
 
-  /* 不许压字：任意两条的包围盒都不能相交（出生避让的验收） */
+  /* 不许压字：任意两条的包围盒都不能相交（出生避让的验收）。
+     宽度用 flowtext.js 的估算函数；高度按行高 1.24 字号算。 */
   function overlaps(fl) {
     let n = 0;
     for (let i = 0; i < fl.items.length; i++) {
       for (let j = i + 1; j < fl.items.length; j++) {
         const a = fl.items[i], b = fl.items[j];
-        const hw = ([...a.text].length * a.size + [...b.text].length * b.size) * 0.5;
+        const hw = (estW(a.text, a.size) + estW(b.text, b.size)) * 0.5;
         const hh = (a.size + b.size) * 0.62;
         if (Math.abs(a.x - b.x) < hw && Math.abs(a.y - b.y) < hh) n++;
       }
@@ -189,9 +231,12 @@ ok(probe._alphaAt({ alpha: 1, travel: 1e9, y: 0 }) === 0, '到屏幕顶透明（
 ok(probe._alphaAt({ alpha: 1, travel: 1e9, y: 0.16 * 844 }) > 0.99, '离开淡出区就满透明');
 ok(Math.abs(probe._alphaAt({ alpha: 0.5, travel: 1e9, y: 1e9 }) - 0.5) < 1e-9, '远处小字按自身 alpha 压暗');
 
-/* 9d. 取句：不连着重复，且长跑能覆盖整池 */
+/* 9d. 取句：不连着重复，且长跑能覆盖整池。
+ *     这里直接连抽 400 次，所以先把屏上清空（否则出生带挤满会拒绝发射）。 */
 const probe2 = new sb.FlowText(c, rnd);
 probe2.layout(390, 844, 0.45);
+probe2.items.length = 0;
+probe2.live = probe2.live.map(() => 0);
 const seen = [];
 for (let i = 0; i < 400; i++) seen.push(probe2._emit().text);
 let twice = false;
@@ -278,6 +323,70 @@ ok(ec.text.indexOf(c.envelope.text) >= 0, '信封上的文案被绘制');
 const c2 = JSON.parse(JSON.stringify(c));
 c2.envelope.enabled = false;
 ok(c2.envelope.enabled === false, 'envelope.enabled=false 的配置路径存在');
+
+/* ==========================================================================
+ * 12. 信：信息流飘满 flowSeconds 秒之后自动升起，整封一屏放得下
+ * ======================================================================== */
+ok(c.letter.enabled === true, '信默认启用');
+ok(Math.abs(c.letter.flowSeconds - 9) < 1e-9,
+   '信息流持续 ' + c.letter.flowSeconds + ' 秒（长长久久）');
+ok(c.letter.flowFade > 0 && c.letter.flowFade < c.letter.flowSeconds,
+   '淡出时长 ' + c.letter.flowFade + 's 落在信息流时长之内');
+const letterChars = c.letter.body.join('').length + c.letter.greeting.length;
+ok(letterChars > 100, '信正文 ' + letterChars + ' 字');
+
+for (const [w, h] of [[390, 844], [360, 640], [1440, 900], [1920, 1080], [2560, 1440]]) {
+  const tag = '视口 ' + w + 'x' + h + '：';
+  const lt = new sb.Letter(c);
+  lt.layout(w, h);
+  const fit = lt._fitText(makeCtx());
+  const innerH = lt.ph - lt.ph * c.letter.padY * 2;
+
+  ok(lt.pw <= w && lt.ph <= h,
+     tag + '信纸没超出屏幕（' + lt.pw.toFixed(0) + '×' + lt.ph.toFixed(0) + '）');
+  ok(fit.h <= innerH + 1e-6,
+     tag + '整封信一屏放得下（正文高 ' + fit.h.toFixed(0) + ' ≤ 可用 ' + innerH.toFixed(0) +
+     '，自动排到 ' + fit.size + 'px）');
+  ok(fit.size >= c.letter.minSize, tag + '字号 ' + fit.size + 'px 不算小');
+  ok(fit.lines.filter(l => l.kind === 'body').length >= 6,
+     tag + '正文排了 ' + fit.lines.filter(l => l.kind === 'body').length + ' 行');
+  ok(fit.lines[0].kind === 'seal' || fit.lines[0].kind === 'greeting',
+     tag + '第一行是封记或称呼');
+}
+
+/* 13. 信的升起动画与绘制 */
+const lc = { fill: 0, stroke: 0, text: [], fillRect: 0 };
+const letterCtx = makeCtx(lc, lc.text);
+const lt2 = new sb.Letter(c);
+lt2.layout(390, 844);
+ok(lt2.active === false, '信一开始不出场（要等信息流飘满）');
+let letterOk = true;
+try {
+  lt2.start();
+  lt2.update(c.letter.duration * 0.35);
+  lt2.render(letterCtx);                       /* 升到一半 */
+  lt2.update(99);
+  lt2.render(letterCtx);                       /* 停稳 */
+} catch (e) { letterOk = false; console.log('  信渲染抛错: ' + e.message); }
+ok(letterOk, '信升起全程渲染无异常（半途 / 停稳）');
+ok(lt2.done === true && lt2.progress === 1, '升起动画能走到完成');
+ok(lc.text.indexOf(c.letter.greeting) >= 0, '称呼被绘制');
+ok(c.letter.body.every(p => lc.text.join('').replace(/\s/g, '').indexOf(p.slice(0, 8)) >= 0),
+   '两段正文都被绘制');
+ok(lt2._bmp && lt2._bmp.width > 0 && lt2._bmp.height > 0,
+   '信纸缓存位图已生成（' + lt2._bmp.width + '×' + lt2._bmp.height + '，按 2 倍分辨率）');
+ok((lc.image || 0) > 0, '信纸用了缓存位图（drawImage ' + (lc.image || 0) + ' 次），不是每帧重新做模糊');
+
+/* 14. 端到端（时间轴）：?t=12 应该已经翻到信，而且信息流已经淡完 */
+{
+  const cnt = { fill: 0, fillText: 0, arc: 0, stroke: 0 };
+  const shown = [];
+  const s3 = makeSandbox('?t=12', cnt, shown);
+  ok(shown.indexOf(s3.MOONFEST.letter.greeting) >= 0,
+     '?t=12（信息流 9s + 信 2s 之后）画面里已经有信');
+  ok(cnt.fillText > 0, '此帧确实画了字（' + cnt.fillText + ' 次 fillText）');
+  ok(s3.__moonfest.flow.dim === 0, '此时信息流已经完全淡出（dim=0），不用再算它了');
+}
 
 console.log(fail === 0 ? '\n全部通过 (' + 0 + ' 失败)' : '\n失败 ' + fail + ' 项');
 process.exit(fail ? 1 : 0);

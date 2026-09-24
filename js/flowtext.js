@@ -53,6 +53,7 @@
     this._free = [];     /* 回收池：每秒要发射十几条，复用对象免掉 GC 抖动 */
     this._order = [];    /* 绘制顺序（按字号＝远近排），复用数组 */
     this._acc = 0;       /* 发射累加器（不足一条时留到下一帧） */
+    this._spot = false;  /* 上一次找位置是否成功（见 _bestSpot / update） */
     this.vw = 0; this.vh = 0;
     this.size = 0;       /* 基准字号 */
     this.speed = 0;      /* 基准速度：crossSeconds 秒穿完一屏（像素/秒） */
@@ -63,6 +64,7 @@
     this.solid = '';     /* 关掉流光时用的纯色 */
     this._fonts = {};    /* 字号 -> 字体串缓存，键是量化后的字号 */
     this.reveal = 1;     /* 整体显现进度 0~1，由 main.js 在拆封过渡时驱动 */
+    this.dim = 1;        /* 整体淡出（信升起前那几秒），1 = 全亮、0 = 已经看不见 */
   }
 
   /* 字号 = 设计字号 × 缩放比，但夹在 [视口高度 × minViewportRatio, maxSize]
@@ -150,11 +152,22 @@
     it.size = this.size * (sc.sizeMin + n * (sc.sizeMax - sc.sizeMin));
     it.alpha = sc.farAlpha + (1 - sc.farAlpha) * n;   /* 远处的字暗一点 */
 
+    /* 长句子自动缩一点：字数多的句子按最大字号会顶满整个屏宽。
+       代价是长句的字号区间被压低，但总比跑出屏幕外好。 */
+    var unit = estWidth(it.text, 1);                  /* 每 1px 字号占多宽 */
+    var cap = this.vw * sc.maxWidthRatio;
+    if (unit > 0 && unit * it.size > cap) it.size = cap / unit;
+
     /* 速度全场一致（用户要的"往上走速度一样"）：
        于是相对位置永不改变，撒好的版式会原样保持到飘出屏幕。 */
     it.spd = this.speed;
 
     this._bestSpot(it);
+    if (!this._spot) {                 /* 真的挤不下：这条先不发（见 update） */
+      if (it.pi >= 0) this.live[it.pi]--;
+      if (this._free.length < 160) this._free.push(it);
+      return null;
+    }
 
     /* 生命：刚好够它飘出屏幕顶，再多留一点当兜底（防止极端参数下卡住不回收） */
     it.maxLife = (it.y0 + it.size * 2) / it.spd * (1 + r() * 0.35);
@@ -168,8 +181,10 @@
   };
 
   /* 挑一个不撞车的位置：横向全宽随机、纵向在"出生带"内随机。
-     满屏撒字很容易两句话压在一起（同一句还会看起来像重影），
-     所以随机试 placeTries 次，取最宽松的那个；一旦找到不重叠的就直接收工。 */
+     满屏撒字很容易两句话压在一起（同一句还会看起来像重影），所以随机试
+     placeTries 次，取最宽松的那个；一旦找到不重叠的就直接收工。
+     一个都没让开就把 _spot 置 false —— 调用方会放弃这一条，等下一帧再试。
+     这样"绝不压字"是结构上的保证，而不是靠调参调出来的。 */
   FlowText.prototype._bestSpot = function (it) {
     var sc = this.sc, r = this.rnd;
     var i, k, o, s, score;
@@ -183,7 +198,7 @@
     var top = this.vh * sc.spawnTopRatio;
     var bot = this.vh + it.size * 2;
 
-    var bestX = lo + r() * (hi - lo), bestY = bot, best = -1;
+    var bestX = 0, bestY = bot, best = -1;
     for (k = 0; k < sc.placeTries; k++) {
       var x = lo + r() * (hi - lo);
       var y = top + r() * (bot - top);
@@ -201,6 +216,8 @@
       if (best >= 1) break;                    /* 已经让开了，不再试 */
     }
 
+    this._spot = best >= 1;
+    if (!this._spot) return;
     it.x = bestX;
     it.y0 = bestY;
     it.y = bestY;
@@ -251,14 +268,16 @@
     if (!sc.enabled) return;
     this.t += dt;
 
-    /* 发射：按速率匀速发，与速度解耦 —— 想更密只调 density */
+    /* 发射：按速率匀速发，与速度解耦 —— 想更密只调 density。
+       挤不下（出生带被占满）就先不发，把额度留在累加器里下一帧再试：
+       于是屏上条数会自动收敛到"塞得下的最大值"，且永不压字。 */
     this._acc += dt * this.spawnRate;
-    var n = this._acc | 0;
-    if (n > 0) {
-      this._acc -= n;
-      var room = sc.maxItems - this.items.length;
-      if (n > room) n = room;
-      while (n-- > 0) this.items.push(this._emit());
+    if (this._acc > 4) this._acc = 4;            /* 别把欠账攒成爆发 */
+    while (this._acc >= 1 && this.items.length < sc.maxItems) {
+      var born = this._emit();
+      if (!born) break;
+      this.items.push(born);
+      this._acc -= 1;
     }
 
     /* 推进：全场同速（"往上走速度一样"），飘出屏幕顶或活过 maxLife 就回收 */
@@ -324,7 +343,7 @@
   /* 在视口坐标系下绘制（调用前 main.js 已把变换设成 CSS 像素） */
   FlowText.prototype.render = function (ctx) {
     var sc = this.sc;
-    if (!sc.enabled || !this.items.length || this.reveal <= 0.01) return;
+    if (!sc.enabled || !this.items.length || this.reveal <= 0.01 || this.dim <= 0.01) return;
 
     /* 从小到大画：大字（近）压在小字（远）之上，纵深才成立 */
     var order = this._order;
@@ -345,7 +364,7 @@
       ctx.font = it.font;
       if (!it.w) it.w = ctx.measureText(it.text).width;   /* 量一次就记住 */
       var w = it.w;
-      ctx.globalAlpha = a * this.reveal;
+      ctx.globalAlpha = a * this.reveal * this.dim;
       /* 发光只给够大的字：小字本来就被压暗了，给它糊一圈光晕既看不出来
          又最费性能（软件渲染下逐个字形做高斯模糊是大头）。 */
       ctx.shadowBlur = it.size >= this.size * sc.glowMinMul ? sc.glowBlur * (it.size / sc.size) : 0;
@@ -355,6 +374,10 @@
 
     ctx.restore();
   };
+
+  /* 估宽函数挂到构造器上：_dev/check.js 的"压字"断言要跟实现用同一套算法，
+     否则两边各估各的，测出来的重叠是假的（英文按全角算会宽出八成）。 */
+  FlowText.estWidth = estWidth;
 
   global.FlowText = FlowText;
 })(window);

@@ -30,19 +30,24 @@
   var flow = new window.FlowText(cfg, rnd);
   var ambient = new window.Ambient(cfg, rnd);
   var env = cfg.envelope.enabled ? new window.Envelope(cfg) : null;
+  var letter = cfg.letter.enabled ? new window.Letter(cfg) : null;
 
   var view = { dpr: 1, k: 1, ox: 0, oy: 0, w: 0, h: 0 };
 
   /* 开发辅助：把关键对象挂到 window，方便 _dev/browsercheck.js 在真实浏览器里
      直接查状态。页面本身不依赖它，删掉也不影响运行。 */
-  window.__moonfest = { flow: flow, heart: heart, ambient: ambient, view: view };
+  window.__moonfest = { flow: flow, heart: heart, ambient: ambient, letter: letter, view: view };
 
   /* ==========================================================================
-   * 场景：envelope(等拆封) -> opening(拆封中) -> heart(主场景)
+   * 场景：envelope(等拆封) -> opening(拆封中)
+   *        -> heart(爱心 + 流动的字，飘满 flowSeconds 秒)
+   *        -> letter(信纸自动升起)
    * reveal 是主场景的显现进度，拆封过渡的后半段由它驱动
    * ======================================================================== */
   var scene = env ? 'envelope' : 'heart';
   var reveal = env ? 0 : 1;
+  var flowClock = 0;          /* 主场景开始后过了几秒 —— 信息流的"9 秒"数这个 */
+  var veil = 0;               /* 信升起时盖在爱心上的暗纱浓度 0~1 */
 
   /* ==========================================================================
    * 视角状态
@@ -189,6 +194,7 @@
     view.oy = (h - D.h * k) / 2;
 
     flow.layout(w, h, k);
+    if (letter) letter.layout(w, h);
   }
 
   function designTransform() {
@@ -197,31 +203,61 @@
     ctx.scale(view.k, view.k);
   }
 
+  /* 视口层：1 单位 = 1 CSS 像素。信息流、暗纱、信都在这一层画。
+     ★ 每次切换层都要显式调用 —— 上一层画完不会自己还原，
+       heart/ambient 各自的 save/restore 也不保证把变换留成什么样。
+       漏一次就会整块画面缩到左上角（真踩过）。 */
+  function viewportTransform() {
+    ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
+  }
+
   function draw(timeSec) {
     var H = cfg.heart;
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    designTransform();
-    ambient.render(ctx);
-
     /* 显现缓动：easeOutCubic */
     var e = reveal <= 0 ? 0 : (reveal >= 1 ? 1 : 1 - Math.pow(1 - reveal, 3));
 
-    /* 还没显现时干脆不画爱心，省电（信封可能被盯很久才点） */
-    if (e > 0) {
-      var beat = window.HeartParticles.beatScale(timeSec, H.beat);
-      heart.render(ctx, beat * (0.42 + 0.58 * e), timeSec, currentView(timeSec));
+    /* 信已经完全升到位之后，爱心/星点/信息流都在暗纱下看不见了（有截图为证），
+       这一段就别再每帧画 8650 个粒子 + 满屏扫描线了 —— 直接空过去。
+       暗纱照旧铺（否则背景会比升起过程中亮一截，收尾会"啪"地跳一下）。 */
+    var quiet = letter ? letter.covered() : false;
+
+    if (!quiet) {
+      designTransform();
+      ambient.render(ctx);
+
+      /* 还没显现时干脆不画爱心，省电（信封可能被盯很久才点） */
+      if (e > 0) {
+        var beat = window.HeartParticles.beatScale(timeSec, H.beat);
+        heart.render(ctx, beat * (0.42 + 0.58 * e), timeSec, currentView(timeSec));
+      }
+
+      /* 视口层：1 单位 = 1 CSS 像素 */
+      viewportTransform();
+      flow.reveal = e;
+      flow.render(ctx);
     }
 
-    /* 视口层：1 单位 = 1 CSS 像素 */
-    ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
-    flow.reveal = e;
-    flow.render(ctx);
+    /* 暗纱与信也在视口层画（1 单位 = 1 CSS 像素）。
+       这一步不能放进上面的 if 里 —— 省掉爱心那一段时如果不设变换，
+       就会带着上一帧剩下的（或单位）变换去画，整块画面会缩到左上角。 */
+    viewportTransform();
+
+    /* 暗纱：heart/ambient 各自设 globalAlpha，套不了一层外层透明度，
+       所以直接在最上面铺一层。用纯色而不是径向渐变 —— 满屏叠加一层渐变
+       在软件渲染下不便宜，而这一层本来就只是"压暗"。 */
+    if (veil > 0.001) {
+      ctx.fillStyle = 'rgba(6,4,9,' + veil.toFixed(3) + ')';
+      ctx.fillRect(0, 0, view.w, view.h);
+    }
+
+    if (letter) letter.render(ctx);
 
     /* 信封最后画，压在所有东西之上 */
-    if (env && scene !== 'heart') {
+    if (env && scene !== 'heart' && scene !== 'letter') {
       designTransform();
       env.render(ctx);
     }
@@ -244,12 +280,36 @@
   }
 
   /* ==========================================================================
+   * 主场景里"时间"的推进：信息流飘满 flowSeconds 秒 -> 淡出 -> 信纸升起
+   * ======================================================================== */
+  function updateTelling(dt) {
+    if (!letter || scene === 'envelope' || scene === 'opening') return;
+    if (scene === 'letter') {
+      letter.update(dt);
+      var p = letter.progress;
+      veil = cfg.letter.veil * (p >= 1 ? 1 : 1 - Math.pow(1 - p, 3));
+      return;
+    }
+
+    flowClock += dt;
+    var L = cfg.letter;
+    var fade = L.flowFade > 0.01 ? L.flowFade : 0.01;
+    var left = L.flowSeconds - flowClock;
+    flow.dim = left >= fade ? 1 : (left <= 0 ? 0 : left / fade);
+    if (left <= 0) {
+      letter.start();
+      scene = 'letter';
+    }
+  }
+
+  /* ==========================================================================
    * 启动
    * ======================================================================== */
   bindOrbit();
 
   /* ---------- 静帧模式：?t=秒 ---------- */
-  /* ?open=1 跳过信封直接进主场景；?t= 静帧模式同理 */
+  /* ?open=1 跳过信封直接进主场景；?t= 静帧模式同理。
+     ?t= 也走同一条时间轴，所以 ?t=12 能直接截到"信已经升起来"的样子。 */
   var frozen = /[?&]t=([0-9.]+)/.exec(window.location.search);
   if (/[?&]open=1/.test(window.location.search)) { scene = 'heart'; reveal = 1; }
   if (frozen) {
@@ -257,10 +317,11 @@
     scene = 'heart'; reveal = 1;
     orbit.sway = 0;                 /* 静帧不要摆动，便于逐帧比对 */
     resize();
-    var acc = 0, step = 1 / 60;
+    var acc = 0, stp = 1 / 60;
     while (acc < target) {
-      var d = Math.min(step, target - acc);
-      flow.update(d);
+      var d = Math.min(stp, target - acc);
+      updateTelling(d);
+      if (flow.dim > 0) flow.update(d);
       ambient.update(d);
       acc += d;
     }
@@ -277,8 +338,16 @@
   resize();
 
   if (reduce) {
-    orbit.sway = 0;                       /* 尊重系统设置：不自动摆动 */
-    if (env) env.animateIdle = false;     /* 也不做待机呼吸与脉动 */
+    /* 尊重系统设置：不做任何动画，直接看信（信息流与升起全部跳过） */
+    orbit.sway = 0;
+    if (env) env.animateIdle = false;
+    if (letter) {
+      letter.start();
+      letter.update(99);
+      veil = cfg.letter.veil;
+      flow.dim = 0;
+      scene = 'letter';
+    }
     draw(0.12);
     return;
   }
@@ -289,10 +358,11 @@
     var t = (now - t0) / 1000;
     var dt = Math.min(0.05, (now - last) / 1000);   /* 掉帧时钳制，避免字幕跳跃 */
     last = now;
-    flow.update(dt);
+    updateScene(dt);                                /* 信封拆封进度 */
+    updateTelling(dt);                              /* 信息流计时 -> 信 */
+    if (flow.dim > 0) flow.update(dt);              /* 已经完全淡出就不用再算了 */
     ambient.update(dt);
     updateOrbit(dt);
-    updateScene(dt);
     draw(t);
     window.requestAnimationFrame(frame);
   }
