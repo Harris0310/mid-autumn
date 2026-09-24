@@ -36,7 +36,13 @@
 
   /* 开发辅助：把关键对象挂到 window，方便 _dev/browsercheck.js 在真实浏览器里
      直接查状态。页面本身不依赖它，删掉也不影响运行。 */
-  window.__moonfest = { flow: flow, heart: heart, ambient: ambient, letter: letter, view: view };
+  window.__moonfest = {
+    flow: flow, heart: heart, ambient: ambient, letter: letter, view: view,
+    /* 开发辅助：场景状态快照，给 _dev 里的断言用 */
+    state: function () {
+      return { scene: scene, flowClock: flowClock, veil: veil, reveal: reveal, static: staticMode };
+    }
+  };
 
   /* ==========================================================================
    * 场景：envelope(等拆封) -> opening(拆封中)
@@ -48,6 +54,7 @@
   var reveal = env ? 0 : 1;
   var flowClock = 0;          /* 主场景开始后过了几秒 —— 信息流的"9 秒"数这个 */
   var veil = 0;               /* 信升起时盖在爱心上的暗纱浓度 0~1 */
+  var staticMode = false;     /* 静帧 / 减少动态效果：没有主循环，轻触只能瞬移 */
 
   /* ==========================================================================
    * 视角状态
@@ -58,9 +65,14 @@
     vpitch: 0, vyaw: 0,    /* 松手后的角速度（惯性） */
     dragging: false,
     lastX: 0, lastY: 0,
+    downX: 0, downY: 0,    /* 按下时的位置与时刻，用来区分"轻触"和"拖动" */
+    downT: 0, moved: false,
     idle: 0,               /* 距上次松手过了多少秒 */
     sway: 1                /* 静止摆动的权重：拖动时收到 0，空闲后慢慢回来 */
   };
+
+  var TAP_SLOP = 12;       /* 移动不超过这么多像素才算轻触（否则算拖动） */
+  var TAP_MS = 700;        /* 按下不超过这么久才算轻触 */
 
   function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
@@ -87,6 +99,10 @@
     orbit.vpitch = 0;
     orbit.lastX = e.clientX;
     orbit.lastY = e.clientY;
+    orbit.downX = e.clientX;
+    orbit.downY = e.clientY;
+    orbit.downT = Date.now();
+    orbit.moved = false;
     if (canvas.setPointerCapture && e.pointerId !== undefined) {
       try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* 忽略 */ }
     }
@@ -94,15 +110,50 @@
 
   function moveDrag(e) {
     if (!orbit.dragging) return;
-    applyDrag(e.clientX - orbit.lastX, e.clientY - orbit.lastY);
+    var dx = e.clientX - orbit.lastX;
+    var dy = e.clientY - orbit.lastY;
     orbit.lastX = e.clientX;
     orbit.lastY = e.clientY;
+    /* 只要挪出一点就认定是拖动，松手时就不再当轻触处理 */
+    if (Math.abs(e.clientX - orbit.downX) > TAP_SLOP ||
+        Math.abs(e.clientY - orbit.downY) > TAP_SLOP) orbit.moved = true;
+    if (scene === 'heart') applyDrag(dx, dy);   /* 信盖着的时候转也看不见，别记角度 */
   }
 
   function endDrag() {
     if (!orbit.dragging) return;
     orbit.dragging = false;
     orbit.idle = 0;
+    if (!orbit.moved && Date.now() - orbit.downT < TAP_MS) handleTap();
+  }
+
+  /* 轻触（不是拖动）在「信」和「爱心」之间来回切：
+       信升到位后轻触 -> 信飘回屏幕下方，爱心回来（这时才能拖着转视角）；
+       信息流那一段走完之后，在爱心上轻触 -> 信再升起来。
+     没有主循环的两条路径（静帧、减少动态效果）就直接瞬移。 */
+  function handleTap() {
+    if (!letter) return;
+    var L = cfg.letter;
+    if (scene === 'letter' && letter.progress >= 1) {
+      if (staticMode) {
+        letter.setInstant(false);
+        veil = 0;
+        scene = 'heart';
+        draw(0);
+      } else {
+        letter.hide();
+      }
+    } else if (scene === 'heart' && flowClock >= L.flowSeconds && !letter.active) {
+      if (staticMode) {
+        letter.setInstant(true);
+        veil = L.veil;
+        scene = 'letter';
+        draw(0);
+      } else {
+        letter.start();
+        scene = 'letter';
+      }
+    }
   }
 
   /* 指针事件先看场景：还在信封上，点一下就是拆封 */
@@ -112,14 +163,10 @@
       scene = 'opening';
       return;
     }
-    if (scene === 'heart') startDrag(e);
+    if (scene === 'heart' || scene === 'letter') startDrag(e);
   }
-  function handleMove(e) {
-    if (scene === 'heart') moveDrag(e);
-  }
-  function handleUp() {
-    if (scene === 'heart') endDrag();
-  }
+  function handleMove(e) { moveDrag(e); }
+  function handleUp() { endDrag(); }
 
   function bindOrbit() {
     if (!O.enabled || !canvas.addEventListener) return;
@@ -281,22 +328,30 @@
 
   /* ==========================================================================
    * 主场景里"时间"的推进：信息流飘满 flowSeconds 秒 -> 淡出 -> 信纸升起
+   * 这一段自动时间轴只走一次；走完之后信由"轻触"控制开合（见 handleTap）
    * ======================================================================== */
   function updateTelling(dt) {
     if (!letter || scene === 'envelope' || scene === 'opening') return;
+    var L = cfg.letter;
+
     if (scene === 'letter') {
       letter.update(dt);
       var p = letter.progress;
-      veil = cfg.letter.veil * (p >= 1 ? 1 : 1 - Math.pow(1 - p, 3));
+      veil = L.veil * (p >= 1 ? 1 : 1 - Math.pow(1 - p, 3));
+      if (!letter.active) {              /* 信整个飘下去了，回爱心 */
+        veil = 0;
+        scene = 'heart';
+      }
       return;
     }
 
+    if (flowClock >= L.flowSeconds) return;   /* 自动时间轴已经走完 */
     flowClock += dt;
-    var L = cfg.letter;
     var fade = L.flowFade > 0.01 ? L.flowFade : 0.01;
     var left = L.flowSeconds - flowClock;
     flow.dim = left >= fade ? 1 : (left <= 0 ? 0 : left / fade);
     if (left <= 0) {
+      flowClock = L.flowSeconds;         /* 封顶，之后不再自增 */
       letter.start();
       scene = 'letter';
     }
@@ -316,6 +371,7 @@
     var target = parseFloat(frozen[1]) || 0;
     scene = 'heart'; reveal = 1;
     orbit.sway = 0;                 /* 静帧不要摆动，便于逐帧比对 */
+    staticMode = true;              /* 没有主循环，轻触只能瞬移（见 handleTap） */
     resize();
     var acc = 0, stp = 1 / 60;
     while (acc < target) {
@@ -338,12 +394,13 @@
   resize();
 
   if (reduce) {
-    /* 尊重系统设置：不做任何动画，直接看信（信息流与升起全部跳过） */
+    /* 尊重系统设置：不做任何动画，直接看信（信息流与升起全部跳过）。
+       这一条也没有主循环，所以轻触用瞬移版，她还是能切回爱心看。 */
+    staticMode = true;
     orbit.sway = 0;
     if (env) env.animateIdle = false;
     if (letter) {
-      letter.start();
-      letter.update(99);
+      letter.setInstant(true);
       veil = cfg.letter.veil;
       flow.dim = 0;
       scene = 'letter';

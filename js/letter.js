@@ -81,6 +81,7 @@
     this.progress = 0;
     this.active = false;
     this.done = false;
+    this.dir = 1;              /* 1 = 升起，-1 = 收回去 */
     this.vw = 0; this.vh = 0;
     this.pw = 0; this.ph = 0;
     this._fit = null;
@@ -94,12 +95,29 @@
     this._fit = null;                 /* 尺寸变了，字要重新试 */
   };
 
+  /* 升起来。已经是升起状态就什么都不做（别把上升中的动画重置回底部）。 */
   Letter.prototype.start = function () {
-    if (this.active) return;
+    if (this.active && this.dir === 1) return;
     this.active = true;
-    this.t = 0;
-    this.progress = 0;
+    this.dir = 1;
     this.done = false;
+  };
+
+  /* 收回去（轻触信件时调用）：方向反转，update 把进度往回走，飘回屏幕下方。 */
+  Letter.prototype.hide = function () {
+    if (!this.active) return;
+    this.dir = -1;
+    this.done = false;
+  };
+
+  /* 不做动画的瞬移版：给"减少动态效果"和静帧模式用 —— 那两条路径没有主循环，
+     轻触只能直接换状态，没法演。 */
+  Letter.prototype.setInstant = function (visible) {
+    this.active = !!visible;
+    this.dir = 1;
+    this.t = visible ? this.L.duration : 0;
+    this.progress = visible ? 1 : 0;
+    this.done = this.active;
   };
 
   /* 信已经完全升到位。此时爱心在暗纱下面已经看不见了（见验收截图），
@@ -110,10 +128,22 @@
 
   Letter.prototype.update = function (dt) {
     if (!this.active) return;
-    this.t += dt;
     var dur = Math.max(0.05, this.L.duration);
-    this.progress = this.t >= dur ? 1 : this.t / dur;
-    if (this.progress >= 1) this.done = true;
+    this.t += dt * this.dir;
+    if (this.t <= 0) {                 /* 收回去了 */
+      this.t = 0;
+      this.progress = 0;
+      this.active = false;
+      this.done = false;
+      return;
+    }
+    if (this.t >= dur) {               /* 升到位 */
+      this.t = dur;
+      this.progress = 1;
+      this.done = true;
+      return;
+    }
+    this.progress = this.t / dur;
   };
 
   /* 按某个字号排一版：返回每一行的文字、字号、纵向中线位置，以及总高度 */

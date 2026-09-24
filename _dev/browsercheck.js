@@ -179,9 +179,15 @@ function getJson(url) {
       '速度:f.speed.toFixed(0),发射:+f.spawnRate.toFixed(1),淡出进度:f.dim});})()'));
 
     /* 拖动转视角 */
-    await evaluate('(function(){var c=document.getElementById("scene");' +
+    const dragExpr = '(function(){var c=document.getElementById("scene");' +
       'function pe(t,x,y){c.dispatchEvent(new PointerEvent(t,{clientX:x,clientY:y,pointerId:1,bubbles:true,cancelable:true}));}' +
-      'pe("pointerdown",195,560);for(var i=1;i<=24;i++)pe("pointermove",195,560-i*7);pe("pointerup",195,392);return "ok";})()');
+      'pe("pointerdown",195,560);for(var i=1;i<=24;i++)pe("pointermove",195,560-i*7);pe("pointerup",195,392);return "ok";})()';
+    /* 轻触：按下和抬起在同一点，用来验证"信 <-> 爱心"的切换 */
+    const tapExpr = '(function(){var c=document.getElementById("scene");' +
+      'function pe(t,x,y){c.dispatchEvent(new PointerEvent(t,{clientX:x,clientY:y,pointerId:1,bubbles:true,cancelable:true}));}' +
+      'pe("pointerdown",195,400);pe("pointerup",195,400);return "tap";})()';
+
+    await evaluate(dragExpr);
     await sleep(500);
     await shot('sc7_dragged.png');
     console.log('7) 拖动后 -> _dev/sc7_dragged.png');
@@ -232,11 +238,31 @@ function getJson(url) {
       '行数:(lt._fit&&lt._fit.lines.length)||null});})()'));
     console.log('手机 390x844 信帧时(ms): ' + JSON.stringify(await evaluate(fpsExpr)));
 
+    /* ---- 轻触在「信」和「爱心」之间来回切 ---- *
+     * 信末那行注写着"爱心是3D可转换视角的哟"，所以她必须能回到爱心去转。
+     * 这里真的点一下、再拖一下、再点回来。 */
+    await evaluate(tapExpr);
+    await sleep(2600);                              /* 信飘回屏幕下方用 2s */
+    console.log('轻触信之后: ' + await evaluate('JSON.stringify(window.__moonfest.state())'));
+    await shot('sc10_heart_back.png');
+    console.log('10) 轻触信 -> 爱心回来 -> _dev/sc10_heart_back.png');
+
+    await evaluate(dragExpr);                       /* 回来之后真的能转 */
+    await sleep(600);
+    await shot('sc11_heart_back_dragged.png');
+    console.log('11) 回来之后拖动 -> _dev/sc11_heart_back_dragged.png');
+
+    await evaluate(tapExpr);                        /* 再点一下，信又升起来 */
+    await sleep(2600);
+    console.log('再轻触之后: ' + await evaluate('JSON.stringify(window.__moonfest.state())'));
+    await shot('sc12_letter_again.png');
+    console.log('12) 再轻触 -> 信又升起 -> _dev/sc12_letter_again.png');
+
     /* 桌面视口也量一次。换视口会触发 resize，信的排版会重新试字号。 */
     await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
     await sleep(2500);
-    await shot('sc10_desktop.png');
-    console.log('10) 桌面 1440x900 -> _dev/sc10_desktop.png');
+    await shot('sc13_desktop.png');
+    console.log('13) 桌面 1440x900 -> _dev/sc13_desktop.png');
     console.log('桌面信帧时(ms): ' + JSON.stringify(await evaluate(fpsExpr)));
     console.log('桌面信排版: ' + await evaluate('(function(){var lt=window.__moonfest.letter;' +
       'return JSON.stringify({字号:lt._fit&&lt._fit.size,行数:lt._fit&&lt._fit.lines.length,' +

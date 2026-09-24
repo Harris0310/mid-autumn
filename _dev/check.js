@@ -46,9 +46,12 @@ function makeCtx(counts, log) {
 }
 
 function makeSandbox(search, counts, log) {
+  /* 记录监听器，好让测试真的"点一下"（轻触切换信/爱心这条交互必须端到端测） */
+  const listeners = {};
   const canvas = {
     clientWidth: 800, clientHeight: 900, width: 0, height: 0,
-    addEventListener() {},
+    addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
+    removeEventListener() {},
     setPointerCapture() {},
     getContext() { return makeCtx(counts, log); }
   };
@@ -64,12 +67,18 @@ function makeSandbox(search, counts, log) {
   s.devicePixelRatio = 1;
   s.matchMedia = () => ({ matches: false });
   s.requestAnimationFrame = () => {};
+  s.PointerEvent = function PointerEvent() {};   /* 走 pointer 那条分支（真实浏览器就是它） */
   s.innerWidth = 800; s.innerHeight = 900;
   vm.createContext(s);
   for (const f of scripts) {
     vm.runInContext(fs.readFileSync(path.join(ROOT, f), 'utf8'), s, { filename: f });
   }
   s.__canvas = canvas;
+  s.__fire = function (type, ev) { (listeners[type] || []).forEach(fn => fn(ev)); };
+  s.__tap = function (x, y) {
+    s.__fire('pointerdown', { clientX: x, clientY: y, pointerId: 1 });
+    s.__fire('pointerup', { clientX: x, clientY: y, pointerId: 1 });
+  };
   return s;
 }
 
@@ -406,6 +415,40 @@ ok((lc.image || 0) > 0, '信纸用了缓存位图（drawImage ' + (lc.image || 0
      '?t=12（信息流 9s + 信 2s 之后）画面里已经有信');
   ok(cnt.fillText > 0, '此帧确实画了字（' + cnt.fillText + ' 次 fillText）');
   ok(s3.__moonfest.flow.dim === 0, '此时信息流已经完全淡出（dim=0），不用再算它了');
+}
+
+/* 15. 轻触在「信」和「爱心」之间来回切
+ *     （信末那行注说"爱心是3D可转换视角的哟"，所以她必须能回到爱心去转） */
+{
+  const cnt = { fill: 0, fillText: 0, arc: 0, stroke: 0 };
+  const shown = [];
+  const s4 = makeSandbox('?t=12', cnt, shown);
+  ok(s4.__moonfest.state().scene === 'letter', '?t=12 停在信上');
+  ok(s4.__moonfest.letter.active === true, '信是升起来的');
+  ok(shown.indexOf(s4.MOONFEST.letter.greeting) >= 0, '这一帧画了信的称呼');
+  ok(s4.__moonfest.state().static === true, '静帧模式知道自己没有主循环（轻触走瞬移）');
+
+  shown.length = 0;
+  const arcBefore = cnt.arc;
+  s4.__tap(400, 400);
+  ok(s4.__moonfest.state().scene === 'heart', '轻触信件 -> 回到爱心');
+  ok(s4.__moonfest.letter.active === false, '信已经收起来');
+  ok(s4.__moonfest.state().veil === 0, '暗纱收了，爱心重新露出来');
+  ok(shown.indexOf(s4.MOONFEST.letter.greeting) < 0, '这一帧不再画信');
+  ok(cnt.arc - arcBefore > 5000, '爱心回来了（这帧画了 ' + (cnt.arc - arcBefore) + ' 个粒子）');
+
+  shown.length = 0;
+  s4.__tap(400, 400);
+  ok(s4.__moonfest.state().scene === 'letter', '在爱心上再轻触 -> 信又升起来');
+  ok(s4.__moonfest.letter.progress === 1, '信又回到升到位的状态');
+  ok(shown.indexOf(s4.MOONFEST.letter.greeting) >= 0, '信重新被画出来');
+
+  /* 拖动不能被当成轻触：挪出去再松手，不应该切换场景 */
+  const s5 = makeSandbox('?t=12', { fill: 0, fillText: 0, arc: 0, stroke: 0 });
+  s5.__fire('pointerdown', { clientX: 400, clientY: 400, pointerId: 1 });
+  s5.__fire('pointermove', { clientX: 460, clientY: 400, pointerId: 1 });
+  s5.__fire('pointerup', { clientX: 460, clientY: 400, pointerId: 1 });
+  ok(s5.__moonfest.state().scene === 'letter', '拖动（挪了 60px）不会被当成轻触');
 }
 
 console.log(fail === 0 ? '\n全部通过 (' + 0 + ' 失败)' : '\n失败 ' + fail + ' 项');
