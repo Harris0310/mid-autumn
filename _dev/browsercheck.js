@@ -126,13 +126,21 @@ function getJson(url) {
     await sleep(1800); await shot('sc4_heart.png');
     console.log('4) 主场景 -> _dev/sc4_heart.png');
 
-    /* 帧率（主场景，软件渲染的最坏情况） */
-    const fpsExpr = 'new Promise(function(res){var n=0,t0=performance.now(),worst=0,last=t0;' +
-      'function tick(now){n++;var dt=now-last;last=now;if(n>1&&dt>worst)worst=dt;' +
-      'if(now-t0<4000)requestAnimationFrame(tick);' +
-      'else res(JSON.stringify({frames:n,fps:+(n/((now-t0)/1000)).toFixed(1),worstMs:+worst.toFixed(1)}));}' +
+    /* 先静置一会儿再量：截图（PNG 同步编码）与首帧 JIT 都会带来长帧，
+       不等它们过去，量到的就是冷启动而不是稳态。 */
+    await sleep(1500);
+
+    /* 帧率（主场景，软件渲染的最坏情况）。
+       报中位数与 p90：均值会被个别长帧（GC/合成）带偏，中位数才反映稳态。 */
+    const fpsExpr = 'new Promise(function(res){var d=[],last=performance.now(),t0=last;' +
+      'function q(s,p){return +s[Math.min(s.length-1,Math.floor(s.length*p))].toFixed(2);}' +
+      'function tick(now){d.push(now-last);last=now;' +
+      'if(now-t0<6000)requestAnimationFrame(tick);' +
+      'else{var s=d.slice(1).sort(function(a,b){return a-b;});' +
+      'res({帧数:s.length,fps:+(1000/(s.reduce(function(a,b){return a+b;},0)/s.length)).toFixed(1),' +
+      '中位:q(s,0.5),p90:q(s,0.9),p99:q(s,0.99),最慢:+s[s.length-1].toFixed(1)});}}' +
       'requestAnimationFrame(tick);})';
-    console.log('手机 390x844 主场景帧率: ' + await evaluate(fpsExpr));
+    console.log('手机 390x844 主场景帧时(ms): ' + JSON.stringify(await evaluate(fpsExpr)));
 
     /* 拖动转视角 */
     await evaluate('(function(){var c=document.getElementById("scene");' +
@@ -141,6 +149,43 @@ function getJson(url) {
     await sleep(500);
     await shot('sc5_dragged.png');
     console.log('5) 拖动后 -> _dev/sc5_dragged.png');
+
+    /* 信息流：隔开一点时间再拍两张，验证「不同位置、不同时间」 */
+    await sleep(600);
+    await shot('sc6_flow1.png');
+    console.log('6) 信息流 t+0.0s -> _dev/sc6_flow1.png');
+    await sleep(450);
+    await shot('sc7_flow2.png');
+    console.log('7) 信息流 t+0.45s -> _dev/sc7_flow2.png');
+
+    /* 屏上同时几条、字号区间（与离线断言互相印证） */
+    console.log('信息流状态: ' + await evaluate('(function(){' +
+      'var m=window.__moonfest; if(!m) return "（main.js 未暴露 __moonfest）";' +
+      'var f=m.flow, it=f.items, s=it.map(function(i){return i.size;});' +
+      'return JSON.stringify({条数:it.length,屏内:it.filter(function(i){return i.y>=0&&i.y<=innerHeight;}).length,' +
+      '字号:[Math.min.apply(null,s).toFixed(0),Math.max.apply(null,s).toFixed(0)],' +
+      '速度:f.speed.toFixed(0),发射:+f.spawnRate.toFixed(1)});})()'));
+
+    /* 再量一次，放在全部截图之后 —— 便于判断第一次量到的长帧是不是截图造成的 */
+    console.log('帧时复测(截图之后): ' + JSON.stringify(await evaluate(fpsExpr)));
+
+    /* 桌面视口也量一次。换视口会触发 resize，信息流按新视口重新铺满。 */
+    await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+    await sleep(2500);
+    await shot('sc8_desktop.png');
+    console.log('8) 桌面 1440x900 -> _dev/sc8_desktop.png');
+    console.log('桌面 1440x900 主场景帧时(ms): ' + JSON.stringify(await evaluate(fpsExpr)));
+    console.log('桌面信息流状态: ' + await evaluate('(function(){var f=window.__moonfest.flow;' +
+      'return JSON.stringify({条数:f.items.length,屏内:f.items.filter(function(i){return i.y>=0&&i.y<=innerHeight;}).length});})()'));
+
+    /* 最后：重新开一个干净页面（?open=1，不经信封、不截图）再量一次。
+       用来判断前面量到的偶发长帧到底是页面本身，还是本脚本的截图/拆封流程造成的
+       —— 两者口径不同，报告里必须分清楚。 */
+    await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
+    await send('Page.navigate', { url: FILE_URL + '?open=1' });
+    await sleep(5000);
+    console.log('干净页面(?open=1) 手机帧时(ms): ' + JSON.stringify(await evaluate(fpsExpr)));
+    console.log('干净页面 复测(ms): ' + JSON.stringify(await evaluate(fpsExpr)));
 
     console.log('验收完成');
   }

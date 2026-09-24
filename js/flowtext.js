@@ -1,40 +1,72 @@
 /* ============================================================================
- * flowtext.js —— 流动的字
+ * flowtext.js —— 流动的字（满屏散点信息流）
  *
- * 效果：多句文案随机抽取，一行一行自下而上匀速滚动（字幕式），粉色。
+ * 效果：多句文案随机抽取，在屏幕的**随机位置、随机时刻**出现，带着随机字号
+ *       （近大远小）向上飘，很快穿过屏幕并淡出 —— 粉色的信息流，满天都是。
  *
- * 【为什么"速度一致"反而要做出不规律】
- *   每一行新出现的位置，是在上一行下方 gapMin~gapMax 倍字号之间的一个
- *   随机距离 —— 所以屏幕上的疏密是乱的，出现时间也乱，这就是视觉上的
- *   不规律感。
- *   但所有行速度完全一致，于是任意两行的相对间距一旦定下就永不改变：
- *   这种不规律会原封不动地一路保持到顶，绝不会互相追上或重叠。
- *   而间距又是在一个区间内随机取值，总体文字量依然稳定。
+ * 【为什么不再是"一列字幕"】
+ *   原来是一列居中、自下而上匀速滚。用户要的是「不要文案从一个位置出来，
+ *   要从不同的位置、不同的时间出来，这样才有信息流的感觉」，并且单条文案
+ *   约 1 秒就穿完一屏（≈ 原来的 10 倍速）。
+ *   所以改成"发射器"模型：按固定速率不断随机发射一条文案，每条各自记住
+ *   自己的字号 / 横向落点 / 生成高度 / 生命，飘出屏幕就被回收。
+ *
+ * 【不规律，但绝不压字】
+ *   生成时刻（按速率均匀）、横向落点（全宽随机）、字号（近大远小）三处随机，
+ *   所以同一眼看到的版式永远不一样；但**所有文案上升速度完全一致**
+ *   （用户原话："往上走速度一样"），于是相对位置一旦定下就永不改变 ——
+ *   空间上不规律，时间上却永远不会互相追上。
+ *   再加一道出生避让：撒点若和屏上已有的文案撞上就换个位置，
+ *   满屏撒字才不会糊成一团。
+ *
+ * 【慢/快只改一个数】
+ *   crossSeconds = 一条文案从屏幕底穿到顶用几秒（默认 1.0）。
+ *   淡入淡出、生成区间都按视口高度的**比例**算，所以调速度不会破坏观感比例；
+ *   density 与速度解耦，调快不会顺带把屏幕塞满。
  *
  * 【坐标系】用视口坐标（1 单位 = 1 CSS 像素）而不是设计坐标：
- *   爱心按 contain 缩放，竖屏手机上设计框只占屏幕中间一半，字幕会被困在
- *   那条带子里。改成直接铺满整个视口高度，任何比例下都从上滚到下。
+ *   爱心按 contain 缩放，竖屏手机上设计框只占屏幕中间一半，文案会被困在
+ *   那条带子里。改成直接铺满整个视口，任何比例下都是满屏信息流。
  * ========================================================================== */
 
 (function (global) {
   'use strict';
+
+  /* 发射时拿不到 ctx，只能估宽：CJK / 全角约 1em，其余（英文、数字）约 0.55em。
+     只用来决定横向落点和渐变范围，真实绘制仍以 measureText 为准。 */
+  function estWidth(text, size) {
+    var w = 0;
+    for (var i = 0; i < text.length; i++) {
+      w += text.charCodeAt(i) > 0x2e7f ? 1 : 0.55;
+    }
+    return w * size;
+  }
 
   function FlowText(cfg, rnd) {
     this.cfg = cfg;
     this.rnd = rnd;
     this.sc = cfg.text.scroll;
     this.t = 0;
-    this._last = -1;
-    this.slots = [];
-    this.nextY = 0;
-    this.size = 0; this.speed = 0; this.top = 0;
-    this.vh = 0; this.cx = 0;
-    this.gapMin = 0; this.gapMax = 0;
-    this.reveal = 1;   /* 整体显现进度 0~1，由 main.js 在拆封过渡时驱动 */
+    this._last = -1;     /* 上一次抽中的句子下标，避免连着重复 */
+    this.live = [];      /* 每句此刻在屏上出现几次（用于"优先给没出现过的"） */
+    this.items = [];     /* 正在屏上飘的文案 */
+    this._free = [];     /* 回收池：每秒要发射十几条，复用对象免掉 GC 抖动 */
+    this._order = [];    /* 绘制顺序（按字号＝远近排），复用数组 */
+    this._acc = 0;       /* 发射累加器（不足一条时留到下一帧） */
+    this.vw = 0; this.vh = 0;
+    this.size = 0;       /* 基准字号 */
+    this.speed = 0;      /* 基准速度：crossSeconds 秒穿完一屏（像素/秒） */
+    this.spawnRate = 0;  /* 每秒发射几条 */
+    this.want = 0;       /* 屏上想同时看到的条数（已按视口大小放大） */
+    this.fadeInPx = 0;   /* 淡入距离（像素） */
+    this.fadeOutPx = 0;  /* 淡出距离（像素） */
+    this.solid = '';     /* 关掉流光时用的纯色 */
+    this._fonts = {};    /* 字号 -> 字体串缓存，键是量化后的字号 */
+    this.reveal = 1;     /* 整体显现进度 0~1，由 main.js 在拆封过渡时驱动 */
   }
 
   /* 字号 = 设计字号 × 缩放比，但夹在 [视口高度 × minViewportRatio, maxSize]
-     之间。竖屏手机上 k 只有 0.45，不夹的话字号会掉到 13px、屏上挤十几行。 */
+     之间。竖屏手机上 k 只有 0.45，不夹的话字号会掉到 13px、屏上挤一大片。 */
   FlowText.prototype._scale = function (vh, k) {
     var sc = this.sc;
     var size = sc.size * k;
@@ -45,95 +77,238 @@
     return size;
   };
 
-  /* 随机行距 —— 不规律感的来源 */
-  FlowText.prototype._randGap = function () {
-    return this.gapMin + this.rnd() * (this.gapMax - this.gapMin);
-  };
-
-  /* 随机取一句；避免与上一次完全相同 */
+  /* 随机取一句的下标。
+     优先挑"此刻屏上还没有的句子" —— 屏上同时撒着十几条，池子只有十句时
+     重复是数学上不可避免的，但至少让它摊开，而不是同一句同时挂出好几条。
+     池子里的句子比屏上条数多时，效果就是"每次出现的都是新句子"。 */
   FlowText.prototype._pick = function () {
     var pool = this.sc.pool;
-    if (!pool || !pool.length) return '';
-    if (pool.length === 1) return pool[0];
-    var i = (this.rnd() * pool.length) | 0;
-    if (i === this._last) i = (i + 1) % pool.length;
-    this._last = i;
-    return pool[i];
+    if (!pool || !pool.length) return -1;
+    if (pool.length === 1) return 0;
+
+    var free = null, i;
+    for (i = 0; i < pool.length; i++) {
+      if (!this.live[i] && i !== this._last) {
+        if (!free) free = [];
+        free.push(i);
+      }
+    }
+    if (free) {
+      this._last = free[(this.rnd() * free.length) | 0];
+    } else {
+      /* 池子太小、全都已在屏上：退一步，只要不是上一次那条就行 */
+      i = (this.rnd() * pool.length) | 0;
+      if (i === this._last) i = (i + 1) % pool.length;
+      this._last = i;
+    }
+    return this._last;
   };
 
-  /* 每次视口变化时重排 */
-  FlowText.prototype.layout = function (vw, vh, k, cx) {
-    var sc = this.sc;
-    this.cx = cx;
-    this.vh = vh;
-    this.size = this._scale(vh, k);
-    this.speed = this.size * sc.speedRatio;
-    this.gapMin = this.size * sc.gapMinRatio;
-    this.gapMax = this.size * sc.gapMaxRatio;
+  FlowText.prototype._obtain = function () {
+    return this._free.pop() || {
+      text: '', pi: -1, x: 0, y: 0, y0: 0, size: 0, spd: 0,
+      travel: 0, life: 0, maxLife: 0, phase: 0, alpha: 1,
+      font: '', w: 0, grad: null, gq: -1, gw: -1
+    };
+  };
 
-    /* 上下各留两个行高的缓冲，淡入淡出不在屏幕边界上被切断 */
-    this.top = -this.size * 2;
+  /* 字号（已量化）-> 字体串。每条文案一辈子只换一次字体，
+     不必每帧对每个字做一次 String.replace 再喂给 ctx.font。 */
+  FlowText.prototype._font = function (size) {
+    var key = size.toFixed(2);
+    var hit = this._fonts[key];
+    if (hit) return hit;
+    var s = this.sc.font.replace('{size}', key);
+    this._fonts[key] = s;
+    return s;
+  };
 
-    /* 用随机间距从下往上铺满整条行程，开场就是满屏 */
-    var y = this.top + (vh + this.size * 6);
-    var slots = [];
-    while (y > this.top && slots.length < 240) {
-      slots.push({ y: y, text: this._pick(), phase: this.rnd() });
-      y -= this._randGap();
+  /* 就地移除第 i 条（和末尾交换，避免数组搬移），对象回回收池 */
+  FlowText.prototype._recycle = function (i) {
+    var it = this.items[i];
+    if (it.pi >= 0) this.live[it.pi]--;
+    var last = this.items.pop();
+    if (i < this.items.length) this.items[i] = last;
+    if (this._free.length < 160) this._free.push(it);
+  };
+
+  /* 发射一条：随机字号（近大远小）、随机横向落点、随机生成高度，
+     并避开屏上已有的文案（见 _bestSpot）。 */
+  FlowText.prototype._emit = function () {
+    var sc = this.sc, r = this.rnd;
+    var it = this._obtain();
+    it.pi = this._pick();
+    it.text = it.pi >= 0 ? sc.pool[it.pi] : '';
+    if (it.pi >= 0) this.live[it.pi]++;
+
+    /* 字号随机 —— 参考图里字号差别很大，这是"有远有近"的主要来源。
+       量化成 sizeSteps 档：字号完全连续的话，每条文案的字形都得重新栅格化，
+       浏览器的字形缓存永远打不中（软件渲染下这是实打实的掉帧源）。 */
+    var steps = sc.sizeSteps | 0;
+    var n = r();
+    if (steps > 1) n = ((n * steps) | 0) / (steps - 1);
+    it.size = this.size * (sc.sizeMin + n * (sc.sizeMax - sc.sizeMin));
+    it.alpha = sc.farAlpha + (1 - sc.farAlpha) * n;   /* 远处的字暗一点 */
+
+    /* 速度全场一致（用户要的"往上走速度一样"）：
+       于是相对位置永不改变，撒好的版式会原样保持到飘出屏幕。 */
+    it.spd = this.speed;
+
+    this._bestSpot(it);
+
+    /* 生命：刚好够它飘出屏幕顶，再多留一点当兜底（防止极端参数下卡住不回收） */
+    it.maxLife = (it.y0 + it.size * 2) / it.spd * (1 + r() * 0.35);
+    it.life = 0;
+    it.travel = 0;
+    it.phase = r();      /* 流光相位，让每条文案的高光各扫各的 */
+    it.font = this._font(it.size);
+    it.w = 0;            /* 首次绘制时量一次就记住（字体不会变） */
+    it.grad = null;      /* 换了一句/换了位置，缓存的渐变作废 */
+    return it;
+  };
+
+  /* 挑一个不撞车的位置：横向全宽随机、纵向在"出生带"内随机。
+     满屏撒字很容易两句话压在一起（同一句还会看起来像重影），
+     所以随机试 placeTries 次，取最宽松的那个；一旦找到不重叠的就直接收工。 */
+  FlowText.prototype._bestSpot = function (it) {
+    var sc = this.sc, r = this.rnd;
+    var i, k, o, s, score;
+
+    var half = estWidth(it.text, it.size) * 0.5;
+    var lo = half * sc.edgeBleed, hi = this.vw - lo;
+    if (lo > this.vw * 0.5) { lo = this.vw * 0.5; hi = lo; }
+
+    var pad = it.size * sc.placePad;
+    var halfH = it.size * 0.62 + pad;          /* 文案占的半高（行高约 1.24 字号）*/
+    var top = this.vh * sc.spawnTopRatio;
+    var bot = this.vh + it.size * 2;
+
+    var bestX = lo + r() * (hi - lo), bestY = bot, best = -1;
+    for (k = 0; k < sc.placeTries; k++) {
+      var x = lo + r() * (hi - lo);
+      var y = top + r() * (bot - top);
+      score = 1e9;
+      for (i = 0; i < this.items.length; i++) {
+        o = this.items[i];
+        /* 归一化距离：两个方向都 < 1 才算重叠，所以 max(dx,dy) >= 1 即已让开 */
+        var dx = Math.abs(o.x - x) / (half + estWidth(o.text, o.size) * 0.5 + pad);
+        var dy = Math.abs(o.y - y) / (halfH + o.size * 0.62 + pad);
+        s = dx > dy ? dx : dy;
+        if (s < score) score = s;
+        if (score <= 0) break;
+      }
+      if (score > best) { best = score; bestX = x; bestY = y; }
+      if (best >= 1) break;                    /* 已经让开了，不再试 */
     }
-    if (!slots.length) slots.push({ y: this.top, text: this._pick(), phase: this.rnd() });
 
-    this.slots = slots;
-    /* 下一行的落点：始终在最下面那一行之下一个随机间距处 */
-    this.nextY = slots[0].y + this._randGap();
+    it.x = bestX;
+    it.y0 = bestY;
+    it.y = bestY;
+  };
+
+  /* 视口变化时重排 */
+  FlowText.prototype.layout = function (vw, vh, k) {
+    var sc = this.sc;
+    this.vw = vw; this.vh = vh;
+    this._fonts = {};
+    this.size = this._scale(vh, k);
+    this.speed = vh / Math.max(0.05, sc.crossSeconds);
+    this.fadeInPx = vh * sc.fadeIn;
+    this.fadeOutPx = vh * sc.fadeOut;
+    this.solid = 'rgb(' + sc.color[0] + ',' + sc.color[1] + ',' + sc.color[2] + ')';
+
+    /* 屏上同时几条。以手机视口（390×844）为基准，大屏按面积开方放大并夹住，
+       这样电脑上全屏看也不会稀稀拉拉。 */
+    var areaRatio = Math.sqrt((vw * vh) / (390 * 844));
+    if (!(areaRatio > 1)) areaRatio = 1;
+    if (areaRatio > 2.2) areaRatio = 2.2;
+    this.want = sc.density * areaRatio;
+
+    /* 发射速率由"屏上想同时看到几条"反推：
+       meanLife ≈ 生成高度飘到屏幕顶要走的路程 / 基准速度。 */
+    var bandMid = (vh * sc.spawnTopRatio + vh + this.size * 2) * 0.5;
+    var meanLife = (bandMid + this.size * 2) / this.speed;
+    if (!(meanLife > 0.12)) meanLife = 0.12;
+    this.spawnRate = this.want / meanLife;
+
+    /* 重排：先清空，再**空跑**一段让屏幕自然填满。
+       直接"撒"一批固定的文案不行 —— 密度分布是假的，还会互相压字；
+       照真实规则跑 1.6 屏时间，开场（以及拆封显形那一刻）就是稳定态。 */
+    for (var i = 0; i < this.items.length; i++) this._free.push(this.items[i]);
+    this.items.length = 0;
+    this.live = [];
+    for (var L = 0; L < (sc.pool ? sc.pool.length : 0); L++) this.live.push(0);
+    this._acc = 0;
+    this.t = 0;
+
+    var warm = Math.ceil(sc.crossSeconds * 1.6 * 60);
+    for (var j = 0; j < warm; j++) this.update(1 / 60);
+    this.t = 0;
   };
 
   FlowText.prototype.update = function (dt) {
     var sc = this.sc;
-    if (!sc.enabled || !this.slots.length) return;
+    if (!sc.enabled) return;
     this.t += dt;
 
-    var move = this.speed * dt;
-    for (var i = 0; i < this.slots.length; i++) {
-      var s = this.slots[i];
-      s.y -= move;
-      if (s.y < this.top) {
-        /* 从顶部出去的行直接落到底部下一个随机位置，并换一句新的。
-           所有行速度一致，所以"随机间距"会被原样带上去。 */
-        s.y = this.nextY;
-        this.nextY += this._randGap();
-        s.text = this._pick();
-        s.phase = this.rnd();
-      }
+    /* 发射：按速率匀速发，与速度解耦 —— 想更密只调 density */
+    this._acc += dt * this.spawnRate;
+    var n = this._acc | 0;
+    if (n > 0) {
+      this._acc -= n;
+      var room = sc.maxItems - this.items.length;
+      if (n > room) n = room;
+      while (n-- > 0) this.items.push(this._emit());
+    }
+
+    /* 推进：全场同速（"往上走速度一样"），飘出屏幕顶或活过 maxLife 就回收 */
+    for (var i = this.items.length - 1; i >= 0; i--) {
+      var it = this.items[i];
+      var d = it.spd * dt;
+      it.y -= d;
+      it.travel += d;
+      it.life += dt;
+      if (it.y < -it.size * 2 || it.life > it.maxLife) this._recycle(i);
     }
   };
 
-  /* 底部淡入 / 顶部淡出。行距不再固定，所以按屏幕边界来度量。 */
-  FlowText.prototype._alphaAt = function (y) {
-    var sc = this.sc;
-    var finPx = this.vh * sc.fadeIn;
-    var foutPx = this.vh * sc.fadeOut;
-
-    var fin = finPx > 0 ? (this.vh - y) / finPx : 1;
-    var fout = foutPx > 0 ? (y + foutPx) / foutPx : 1;
-    if (fin > 1) fin = 1; else if (fin < 0) fin = 0;
-    if (fout > 1) fout = 1; else if (fout < 0) fout = 0;
-
-    return Math.min(fin, fout) * sc.alpha;
+  /* 透明度：按"已飘过的距离"淡入、按"离屏幕顶的距离"淡出。
+     两处都用像素距离而不是生命比例 —— 任何速度下观感比例都一致。 */
+  FlowText.prototype._alphaAt = function (it) {
+    var a = it.alpha;                 /* 远处（小字）本来就暗一点 */
+    var k;
+    if (this.fadeInPx > 0) {
+      k = it.travel / this.fadeInPx;
+      if (k < 1) a *= k > 0 ? k : 0;
+    }
+    if (this.fadeOutPx > 0) {
+      k = it.y / this.fadeOutPx;
+      if (k < 1) a *= k > 0 ? k : 0;
+    }
+    return a > 0 ? a : 0;
   };
 
-  /* 粉色底 + 一道浅粉高光扫过（流光） */
-  FlowText.prototype._sheen = function (ctx, x0, x1, phase) {
+  /* 粉色底 + 一道浅粉高光扫过（流光）。
+     一条文案的字体、落点都是固定的，所以渐变**只随相位变**：把相位量化成
+     sheenSteps 档并缓存，绝大多数帧直接复用上一帧的渐变对象 ——
+     省掉每帧每条十几次 addColorStop 和十几个颜色字符串（那正是 GC 抖动、
+     也就是偶发长帧的来源）。 */
+  FlowText.prototype._sheen = function (ctx, it, w) {
     var sc = this.sc;
-    var g = ctx.createLinearGradient(x0, 0, x1, 0);
-    var N = 20;
-    var p = (this.t * sc.sheenSpeed + phase) % 1;
+    var p = (this.t * sc.sheenSpeed + it.phase) % 1;
     if (p < 0) p += 1;
 
+    var steps = sc.sheenSteps | 0;
+    var q = steps > 0 ? (p * steps) | 0 : -1;
+    if (it.grad && it.gq === q && it.gw === w) return it.grad;
+    var pq = steps > 0 ? (q + 0.5) / steps : p;   /* 用档中心，缓存与画面一致 */
+
+    var g = ctx.createLinearGradient(it.x - w / 2, 0, it.x + w / 2, 0);
+    var N = sc.sheenStops || 12;
     var base = sc.color, hi = sc.highlight, wd = sc.sheenWidth;
     for (var i = 0; i <= N; i++) {
       var u = i / N;
-      var d = u - p;
+      var d = u - pq;
       d -= Math.round(d);                       /* 归一化到 [-0.5, 0.5] 的循环距离 */
       var k = Math.exp(-(d / wd) * (d / wd));   /* 高斯亮带 */
       g.addColorStop(u, 'rgb(' +
@@ -141,31 +316,41 @@
         Math.round(base[1] + (hi[1] - base[1]) * k) + ',' +
         Math.round(base[2] + (hi[2] - base[2]) * k) + ')');
     }
+
+    it.grad = g; it.gq = q; it.gw = w;
     return g;
   };
 
   /* 在视口坐标系下绘制（调用前 main.js 已把变换设成 CSS 像素） */
   FlowText.prototype.render = function (ctx) {
     var sc = this.sc;
-    if (!sc.enabled || !this.slots.length || this.reveal <= 0.01) return;
+    if (!sc.enabled || !this.items.length || this.reveal <= 0.01) return;
+
+    /* 从小到大画：大字（近）压在小字（远）之上，纵深才成立 */
+    var order = this._order;
+    order.length = 0;
+    for (var i = 0; i < this.items.length; i++) order.push(this.items[i]);
+    order.sort(function (a, b) { return a.size - b.size; });
 
     ctx.save();
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.font = sc.font.replace('{size}', this.size.toFixed(2));
     ctx.shadowColor = sc.glow;
-    ctx.shadowBlur = sc.glowBlur * (this.size / sc.size);
 
-    for (var i = 0; i < this.slots.length; i++) {
-      var s = this.slots[i];
-      if (!s.text) continue;
-      var a = this._alphaAt(s.y);
+    for (var j = 0; j < order.length; j++) {
+      var it = order[j];
+      var a = this._alphaAt(it);
       if (a <= 0.01) continue;
 
-      var w = ctx.measureText(s.text).width;
+      ctx.font = it.font;
+      if (!it.w) it.w = ctx.measureText(it.text).width;   /* 量一次就记住 */
+      var w = it.w;
       ctx.globalAlpha = a * this.reveal;
-      ctx.fillStyle = this._sheen(ctx, this.cx - w / 2, this.cx + w / 2, s.phase);
-      ctx.fillText(s.text, this.cx, s.y);
+      /* 发光只给够大的字：小字本来就被压暗了，给它糊一圈光晕既看不出来
+         又最费性能（软件渲染下逐个字形做高斯模糊是大头）。 */
+      ctx.shadowBlur = it.size >= this.size * sc.glowMinMul ? sc.glowBlur * (it.size / sc.size) : 0;
+      ctx.fillStyle = sc.sheen ? this._sheen(ctx, it, w) : this.solid;
+      ctx.fillText(it.text, it.x, it.y);
     }
 
     ctx.restore();

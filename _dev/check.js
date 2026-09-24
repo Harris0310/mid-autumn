@@ -74,7 +74,7 @@ ok(c.design.w === 800 && c.design.h === 900, '设计画布 800x900');
 const pool = c.text.scroll.pool;
 ok(pool.length >= 2, '文案池 ' + pool.length + ' 句');
 const lens = [...new Set(pool.map(s => [...s].length))];
-ok(lens.length === 1, '文案池每句字数一致（' + lens.join('/') + '），输出量才均匀');
+ok(new Set(pool).size === pool.length, '文案池没有重复句（' + pool.length + ' 句，字数 ' + lens.join('/') + '）');
 ok(c.heart.profile.s.length === c.heart.profile.w.length, '密度剖面 s/w 等长');
 ok(c.heart.colorStops.every((v, i, a) => i === 0 || v > a[i - 1]), '颜色阈值递增');
 
@@ -101,41 +101,115 @@ const heart = new sb.HeartParticles(c);
 ok(heart.count > 5000, '粒子数 = ' + heart.count);
 ok(heart.buckets.length < 900, '颜色桶 = ' + heart.buckets.length + '（即每帧 fill 次数）');
 
-/* 9. 字幕几何。要同时满足两个看似矛盾的要求：
- *      a) 间距必须随机 —— 这是"视觉上的不规律感"的来源
- *      b) 所有行速度一致，于是相对间距一旦定下就永不改变 ——
- *         所以不规律会一路保持到顶，且绝不互相追上、重叠 */
+/* 9. 流动的字（满屏信息流）。要同时满足：
+ *      a) 从**随机位置、随机时刻**出现 —— 横向落点全宽、生成高度分档
+ *      b) 单条约 crossSeconds 秒穿完一屏（约 10 倍于原来的单列字幕）
+ *      c) 字号随机 + 近快远慢的运动视差 —— 屏上才有纵深
+ *      d) 不泄漏：长跑之后条目数稳定在目标密度附近
+ *      e) 首帧就预填满屏 —— 拆封显形那一刻不会先空一片 */
 const rnd = sb.MoonfestRandom(1);
 const SL = c.text.scroll;
+
+ok(SL.crossSeconds <= 1.2,
+   '穿屏用时 ' + SL.crossSeconds + 's（原单列字幕一行约 10s，即约 10 倍速）');
+ok(SL.density >= 6, '目标密度 ' + SL.density + ' 条/屏');
+
 for (const [w, h, k] of [[1920, 1080, 1.2], [390, 844, 0.45], [1440, 900, 1.0], [2560, 1440, 1.6]]) {
   const tag = '视口 ' + w + 'x' + h + '：';
   const f = new sb.FlowText(c, rnd);
-  f.layout(w, h, k, w / 2);
+  f.layout(w, h, k);
 
-  const ys = f.slots.map(s => s.y).sort((a, b) => a - b);
-  const gaps = ys.slice(1).map((v, i) => v - ys[i]);
-  const uniq = [...new Set(gaps.map(g => +g.toFixed(4)))];
-  const gMin = f.size * SL.gapMinRatio, gMax = f.size * SL.gapMaxRatio;
+  const base = f.size;
+  ok(Math.abs(f.speed - h / SL.crossSeconds) < 1e-6,
+     tag + '基准速度 = 屏高 / crossSeconds（' + f.speed.toFixed(0) + ' px/s）');
+  ok(f.items.length >= 5, tag + '首帧就预填 ' + f.items.length + ' 条（满屏，不用等飘上来）');
+  ok(f.items.every(it => it.x >= 0 && it.x <= w), tag + '横向落点都在屏内');
 
-  ok(uniq.length > 1, tag + '间距是随机的（' + uniq.length + ' 种不同值）');
-  ok(gaps.every(g => g >= gMin - 1e-6 && g <= gMax + 1e-6),
-     tag + '间距都落在 [' + gMin.toFixed(0) + ', ' + gMax.toFixed(0) + '] 内');
-  ok(f.slots.every(s => s.y > f.top), tag + '布局后所有行都在 top 之下（首帧无回收）');
-  const visible = ys.filter(v => v >= 0 && v <= h).length;
-  ok(visible >= 4, tag + '屏上同时可见 ' + visible + ' 行');
-  ok(f.size >= 16 && f.size <= SL.maxSize + 0.001, tag + '字号 ' + f.size.toFixed(1) + 'px 可读');
+  const sizes = f.items.map(it => it.size);
+  const sMin = Math.min(...sizes), sMax = Math.max(...sizes);
+  ok(sMin >= base * SL.sizeMin - 1e-6 && sMax <= base * SL.sizeMax + 1e-6,
+     tag + '字号都在 [' + (base * SL.sizeMin).toFixed(0) + ', ' + (base * SL.sizeMax).toFixed(0) + '] 内' +
+     '（实测 ' + sMin.toFixed(0) + '~' + sMax.toFixed(0) + '）');
+  ok(sMax / sMin > 1.2, tag + '字号有近大远小的差距（' + (sMax / sMin).toFixed(2) + ' 倍）');
 
-  /* 滚一段（短到没有行出顶），随机间距必须原样保持 */
-  const tExit = (ys[0] - f.top) / f.speed;
-  const steps = Math.max(1, Math.floor(tExit * 0.4 * 60));
-  for (let i = 0; i < steps; i++) f.update(1 / 60);
-  const ys2 = f.slots.map(s => s.y).sort((a, b) => a - b);
-  const gaps2 = ys2.slice(1).map((v, i) => v - ys2[i]);
-  ok(gaps2.every((g, i) => Math.abs(g - gaps[i]) < 1e-6),
-     tag + '滚动 ' + (steps / 60).toFixed(2) + 's 后随机间距原样保持（速度一致，不会互相追上）');
-  ok(Math.abs((ys[ys.length - 1] - ys[0]) - (ys2[ys2.length - 1] - ys2[0])) < 1e-6,
-     tag + '整体跨度不变');
+  const spds = f.items.map(it => it.spd / f.speed);
+  ok(spds.every(v => v === 1), tag + '所有文案速度完全一致（用户要的"往上走速度一样"）');
+
+  /* 不许压字：任意两条的包围盒都不能相交（出生避让的验收） */
+  function overlaps(fl) {
+    let n = 0;
+    for (let i = 0; i < fl.items.length; i++) {
+      for (let j = i + 1; j < fl.items.length; j++) {
+        const a = fl.items[i], b = fl.items[j];
+        const hw = ([...a.text].length * a.size + [...b.text].length * b.size) * 0.5;
+        const hh = (a.size + b.size) * 0.62;
+        if (Math.abs(a.x - b.x) < hw && Math.abs(a.y - b.y) < hh) n++;
+      }
+    }
+    return n;
+  }
+  ok(overlaps(f) === 0, tag + '首帧没有互相压字（重叠对数 ' + overlaps(f) + '）');
+
+  const half = f.items.filter(it => it.y < h / 2).length;
+  ok(half >= 2 && f.items.length - half >= 2,
+     tag + '上下半屏都有文案（上半 ' + half + ' / 下半 ' + (f.items.length - half) + '），不是挤在一头');
+
+  /* 跑 30 秒：条目数收敛、确有回收（否则就是泄漏） */
+  for (let i = 0; i < 30 * 60; i++) f.update(1 / 60);
+  const areaRatio = Math.min(2.2, Math.max(1, Math.sqrt(w * h / (390 * 844))));
+  const want = SL.density * areaRatio;
+  ok(f._free.length > 0, tag + '飘出屏幕的文案被回收进池（复用 ' + f._free.length + ' 个对象）');
+  ok(f.items.length <= SL.maxItems, tag + '30s 后条目数 ' + f.items.length + ' 不超过上限 ' + SL.maxItems);
+  ok(Math.abs(f.items.length - want) < want * 0.5,
+     tag + '稳定在目标密度附近：' + f.items.length + ' ≈ ' + want.toFixed(1));
+  ok(overlaps(f) === 0, tag + '同速下跑 30s 依然零压字（相对位置永不变）');
 }
+
+/* 9b. 出生位置：新发射的文案都落在"出生带"里（[视口高 × spawnTopRatio,
+ *     屏幕下方一点点]），而不是凭空出现在屏幕上方 */
+{
+  const probe = new sb.FlowText(c, rnd);
+  probe.layout(390, 844, 0.45);
+  probe.items.length = 0;
+  const ys = [];
+  for (let i = 0; i < 200; i++) ys.push(probe._emit().y0);
+  const lo = 844 * SL.spawnTopRatio, hi = 844 + 46 * SL.sizeMax * 2;
+  ok(ys.every(v => v >= lo - 1e-6 && v <= hi + 1e-6),
+     '出生高度都落在 [' + lo.toFixed(0) + ', ' + hi.toFixed(0) + ']（' +
+     Math.min(...ys).toFixed(0) + '~' + Math.max(...ys).toFixed(0) + '）');
+  ok(Math.max(...ys) - Math.min(...ys) > 20, '出生高度是随机的（' + (Math.max(...ys) - Math.min(...ys)).toFixed(0) + 'px 跨度）');
+}
+
+/* 9c. 淡入淡出：用像素距离度量，任何速度下比例一致 */
+const probe = new sb.FlowText(c, rnd);
+probe.layout(390, 844, 0.45);
+ok(probe._alphaAt({ alpha: 1, travel: 0, y: 400 }) === 0, '刚出现时透明（淡入起点）');
+ok(probe._alphaAt({ alpha: 1, travel: 0.12 * 844, y: 400 }) > 0.99, '淡入距离走完就满透明');
+ok(probe._alphaAt({ alpha: 1, travel: 1e9, y: 0 }) === 0, '到屏幕顶透明（淡出终点）');
+ok(probe._alphaAt({ alpha: 1, travel: 1e9, y: 0.16 * 844 }) > 0.99, '离开淡出区就满透明');
+ok(Math.abs(probe._alphaAt({ alpha: 0.5, travel: 1e9, y: 1e9 }) - 0.5) < 1e-9, '远处小字按自身 alpha 压暗');
+
+/* 9d. 取句：不连着重复，且长跑能覆盖整池 */
+const probe2 = new sb.FlowText(c, rnd);
+probe2.layout(390, 844, 0.45);
+const seen = [];
+for (let i = 0; i < 400; i++) seen.push(probe2._emit().text);
+let twice = false;
+for (let i = 1; i < seen.length; i++) if (seen[i] === seen[i - 1]) twice = true;
+ok(!twice, '连续两次不会抽到同一句（随机且有信息量）');
+ok(new Set(seen).size === SL.pool.length,
+   '长跑覆盖整个文案池（' + new Set(seen).size + '/' + SL.pool.length + '）');
+
+/* 9e. 取句的"优先给没出现过的"：池子比屏上条数多时，同屏不应该出现重复句 */
+const big = JSON.parse(JSON.stringify(c));
+big.text.scroll.pool = Array.from({ length: 40 }, (_, i) => '测试文案第' + i + '句');
+const probe3 = new sb.FlowText(big, sb.MoonfestRandom(7));
+probe3.layout(390, 844, 0.45);
+const onScreenTexts = probe3.items.map(it => it.text);
+ok(new Set(onScreenTexts).size === onScreenTexts.length,
+   '池子够大时同屏无重复句（' + onScreenTexts.length + ' 条 / ' +
+   new Set(onScreenTexts).size + ' 种不同句子）');
+
 
 /* 10. 3D：俯仰应产生纵向前缩，偏航应产生横向前缩，且粒子不多不少正好画一遍 */
 function renderBounds(pitch, yaw) {

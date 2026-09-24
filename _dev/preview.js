@@ -4,7 +4,7 @@
  *
  * 沙箱里跑不了 Chromium（mojo 命名管道被拦），所以这里用 Node 直接加载真实的
  * js/heart.js 与 js/flowtext.js，配一个只实现所需子集的迷你 Canvas2D，
- * 把画面光栅化成 PNG，用来核对「镂空」形状与字幕版式。
+ * 把画面光栅化成 PNG，用来核对「镂空」形状与信息流版式。
  *
  * 文字没有字体光栅器，这里用等宽色块代替字形：
  *   中文单字宽度 ≈ 1em，所以色块宽度 = 字数 × 字号，位置/透明度与真实一致。
@@ -207,9 +207,9 @@ const H_ = cfg.heart;
 /* 0.12s 约落在原版正弦的第一个扩张峰附近 */
 const scale = sandbox.HeartParticles.beatScale(0.12, H_.beat);
 
-/* 字幕：推进 20 秒，让槽位填满并稳定 */
+/* 字幕：推进 20 秒，让信息流进入稳定状态 */
 const flow = new sandbox.FlowText(cfg, rnd);
-flow.layout(W, H, 1, cfg.heart.cx);     /* 预览按 1:1，k=1 */
+flow.layout(W, H, 1);                   /* 预览按 1:1，k=1 */
 for (let i = 0; i < 20 * 60; i++) flow.update(1 / 60);
 
 /* 让文字色块按真实位置画出来（transform 保持 identity，与设计坐标一致） */
@@ -230,10 +230,11 @@ const png = encodePNG(W, H, out);
 fs.writeFileSync(path.join(__dirname, OUT_NAME), png);
 
 /* ---------------- 文字版式诊断 ---------------- */
-const ys = flow.slots.map(s => s.y).sort((a, b) => a - b);
-const gaps = ys.slice(1).map((v, i) => +(v - ys[i]).toFixed(4));
-const uniq = [...new Set(gaps)];
-const alphas = ys.map(y => +flow._alphaAt(y).toFixed(3));
+const SL = cfg.text.scroll;
+const sizes = flow.items.map(it => it.size);
+const alphas = flow.items.map(it => +flow._alphaAt(it).toFixed(3));
+const xs = flow.items.map(it => it.x);
+const onScreen = flow.items.filter(it => it.y >= 0 && it.y <= H).length;
 
 console.log('=== 粒子 ===');
 console.log('总粒子数:', heart.count, '| 颜色桶:', heart.buckets.length, '| 闪烁:', heart.flashList.length);
@@ -244,11 +245,15 @@ for (let i = 0; i < BINS; i++) {
   const lo = (i / BINS).toFixed(1), hi = ((i + 1) / BINS).toFixed(1);
   console.log('  s ' + lo + '-' + hi + ' | ' + '#'.repeat(Math.round(hist[i] / maxh * 46)) + ' ' + hist[i]);
 }
-console.log('=== 字幕版式 ===');
-console.log('槽位数:', flow.count, '| 行程:', flow.span, '| top:', flow.top, '| bottom:', flow.bottom);
-console.log('行距是否恒定:', uniq.length === 1 ? '是  gap=' + uniq[0] : '否 -> ' + JSON.stringify(uniq));
-console.log('屏内(0..900)行数:', ys.filter(y => y >= 0 && y <= 900).length);
-console.log('alpha 曲线(自顶向下):', alphas.join(' '));
+console.log('=== 信息流版式 ===');
+console.log('条目数:', flow.items.length, '(目标', flow.want.toFixed(1) + ') | 屏内:', onScreen);
+console.log('基准字号:', flow.size.toFixed(1) + 'px | 实测字号:',
+  sizes.length ? Math.min(...sizes).toFixed(1) + '~' + Math.max(...sizes).toFixed(1) + 'px' : '-');
+console.log('基准速度:', flow.speed.toFixed(0) + 'px/s (穿屏', SL.crossSeconds + 's) | 发射:',
+  flow.spawnRate.toFixed(1) + '条/s | 回收池:', flow._free.length);
+console.log('横向落点范围:', xs.length ? Math.min(...xs).toFixed(0) + '~' + Math.max(...xs).toFixed(0) : '-',
+  '/ 画布宽', W);
+console.log('alpha 分布:', alphas.join(' '));
 console.log('前景文字框数:', ctx.textCalls.length);
 console.log('视角 pitch=' + ARG_PITCH.toFixed(2) + ' yaw=' + ARG_YAW.toFixed(2));
 console.log('PNG ->', path.join(__dirname, OUT_NAME), png.length, 'bytes');

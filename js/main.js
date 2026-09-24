@@ -5,8 +5,8 @@
  *   设计层（环境 + 爱心）  —— 在 config.design 里绘制，按 contain 等比缩放到
  *                             视口并居中，保证爱心在任何比例下都完整且不变形。
  *                             爱心内部再自己做一遍 3D 旋转 + 透视。
- *   视口层（流动的字）    —— 直接铺满整个视口高度，竖屏手机上字幕也能从上滚到
- *                             底，而不是被限制在设计框那一条带子里。
+ *   视口层（流动的字）    —— 直接铺满整个视口，文案才散得开、铺得满，
+ *                             而不是被限制在设计框那一条带子里。
  *
  * 绘制顺序（自底向上）：氛围 -> 爱心 -> 流动的字。文字在爱心之上，
  * 保证粉色字幕压在深红粒子背景上依然清晰。
@@ -32,6 +32,10 @@
   var env = cfg.envelope.enabled ? new window.Envelope(cfg) : null;
 
   var view = { dpr: 1, k: 1, ox: 0, oy: 0, w: 0, h: 0 };
+
+  /* 开发辅助：把关键对象挂到 window，方便 _dev/browsercheck.js 在真实浏览器里
+     直接查状态。页面本身不依赖它，删掉也不影响运行。 */
+  window.__moonfest = { flow: flow, heart: heart, ambient: ambient, view: view };
 
   /* ==========================================================================
    * 场景：envelope(等拆封) -> opening(拆封中) -> heart(主场景)
@@ -184,7 +188,7 @@
     view.ox = (w - D.w * k) / 2;
     view.oy = (h - D.h * k) / 2;
 
-    flow.layout(w, h, k, view.ox + cfg.heart.cx * k);
+    flow.layout(w, h, k);
   }
 
   function designTransform() {
