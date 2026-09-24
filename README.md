@@ -40,11 +40,14 @@ python -m http.server 8080   # 然后访问 http://localhost:8080
 
 **正文一百多字，整封一屏放下**——字号是**自动试出来的**：从 `letter.maxSize`
 往下试，每档都断一次行、量一遍总高度，第一个装得下的就是最终字号
-（手机上 16px、桌面 24px）。所以改文案不用管排版，它自己会缩。
+（手机上 15px、桌面 23px）。所以改文案不用管排版，它自己会缩。
 
 称呼（`greeting`）用粉色，正文两段带**首行缩进**；信纸顶部一枚小 ♥ 封记。
+末尾还有一行**注**（`letter.note`，默认「爱心是3D可转换视角的哟😘😘」），
+比正文小一点、颜色淡一点，像信末的 P.S.。
+
 断行是自己写的：中文任意处可断，英文单词尽量整词挪到下一行，不会把
-`love` 劈成两半。
+`love` 劈成两半；按**码点**走，所以 emoji 也不会被劈成半个方块。
 
 | 位置 | 作用 |
 | --- | --- |
@@ -52,6 +55,8 @@ python -m http.server 8080   # 然后访问 http://localhost:8080
 | `letter.flowFade` | 最后几秒用来淡出 |
 | `letter.duration` | 信纸升起的动画时长 |
 | `letter.greeting` / `letter.body` | 称呼与正文段落 |
+| `letter.note` | 结尾那行注（留空串就不显示） |
+| `letter.noteScale` / `noteGap` / `noteColor` | 注的字号比例、上方间距、颜色 |
 | `letter.indent` | 段落首行缩进几个字 |
 | `letter.maxSize` / `minSize` | 自动排版的字号上下限 |
 | `letter.paperW` / `paperMaxW` / `paperH` / `paperRatio` | 信纸尺寸 |

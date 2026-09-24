@@ -375,6 +375,24 @@ ok(lt2.done === true && lt2.progress === 1, '升起动画能走到完成');
 ok(lc.text.indexOf(c.letter.greeting) >= 0, '称呼被绘制');
 ok(c.letter.body.every(p => lc.text.join('').replace(/\s/g, '').indexOf(p.slice(0, 8)) >= 0),
    '两段正文都被绘制');
+
+/* 结尾那行"注"：要真的画出来，而且断行不能把 emoji 的代理对劈开
+   （劈开会量错宽度、行尾顶出信纸，屏幕上还会出现半个方块） */
+{
+  const LL = c.letter;
+  ok(!!LL.note, '信的结尾有注：' + LL.note);
+  ok(lc.text.join('').indexOf(LL.note.slice(0, 4)) >= 0, '注被绘制');
+  const fit = new sb.Letter(c);
+  fit.layout(390, 844);
+  const laid = fit._fitText(makeCtx());
+  const noteLines = laid.lines.filter(l => l.kind === 'note').map(l => l.text);
+  ok(noteLines.length > 0, '注排了 ' + noteLines.length + ' 行');
+  const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+  const allText = laid.lines.map(l => l.text).join('') + noteLines.join('');
+  ok(!lone.test(allText), '断行没有把一个 emoji 的代理对劈成两半');
+  ok(noteLines.join('').indexOf('😘') >= 0, '注里的 emoji 完整保留');
+  ok(laid.size < LL.maxSize, '加了注之后字号自动缩到 ' + laid.size + 'px，整封仍一屏');
+}
 ok(lt2._bmp && lt2._bmp.width > 0 && lt2._bmp.height > 0,
    '信纸缓存位图已生成（' + lt2._bmp.width + '×' + lt2._bmp.height + '，按 2 倍分辨率）');
 ok((lc.image || 0) > 0, '信纸用了缓存位图（drawImage ' + (lc.image || 0) + ' 次），不是每帧重新做模糊');

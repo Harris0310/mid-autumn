@@ -35,11 +35,22 @@
   function clamp01(x) { return x < 0 ? 0 : (x > 1 ? 1 : x); }
   function easeOut(x) { return 1 - Math.pow(1 - x, 3); }
 
+  /* 逐"字"走字符串：按**码点**走，不要把 emoji 的代理对劈成两半 ——
+     charAt 会把 😘 拆成两个孤立的代理码元，量出来的宽度是错的，
+     断行跟着算错行宽，最后一行就会顶出信纸。 */
+  function glyphStep(text, i) {
+    var c = text.charCodeAt(i);
+    return (c >= 0xd800 && c <= 0xdbff && i + 1 < text.length) ? 2 : 1;
+  }
+
   /* 逐字断行。firstW 是第一行可用宽度（要留首行缩进），restW 是其余行。 */
   function wrapLines(ctx, text, firstW, restW) {
     var lines = [], line = '', lineW = 0, limit = firstW, space = -1;
-    for (var i = 0; i < text.length; i++) {
-      var ch = text.charAt(i);
+    var i = 0;
+    while (i < text.length) {
+      var step = glyphStep(text, i);
+      var ch = text.substr(i, step);
+      i += step;
       var w = ctx.measureText(ch).width;
       if (line && lineW + w > limit) {
         if (space > 0 && /[A-Za-z0-9]/.test(ch)) {
@@ -135,6 +146,20 @@
         h += lineH;
       }
       h += size * L.paraGap;
+    }
+
+    /* 结尾那行"注"（比如告诉她爱心可以转着看）：比正文小一点、颜色淡一点，
+       也参与自动排版，所以加了注之后整封依然一屏放得下。 */
+    if (L.note) {
+      var nSize = size * L.noteScale;
+      var nLineH = nSize * L.lineHeight;
+      h += size * L.noteGap;
+      ctx.font = L.font.replace('{size}', nSize.toFixed(2));
+      var nLines = wrapLines(ctx, L.note, innerW, innerW);
+      for (i = 0; i < nLines.length; i++) {
+        lines.push({ text: nLines[i], size: nSize, mid: h + nLineH * 0.5, indent: 0, kind: 'note' });
+        h += nLineH;
+      }
     }
     return { size: size, lines: lines, h: h };
   };
@@ -235,7 +260,9 @@
         ctx.textAlign = 'left';
         ctx.fillStyle = ln.kind === 'greeting'
           ? 'rgb(' + L.greetingColor.join(',') + ')'
-          : 'rgb(' + L.textColor.join(',') + ')';
+          : (ln.kind === 'note'
+            ? 'rgb(' + L.noteColor.join(',') + ')'
+            : 'rgb(' + L.textColor.join(',') + ')');
         ctx.fillText(ln.text, x + padX + ln.indent, top + ln.mid);
         ctx.textAlign = 'center';
       }
