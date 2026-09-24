@@ -17,6 +17,12 @@ const zlib = require('zlib');
 const ROOT = path.resolve(__dirname, '..');
 const W = 800, H = 900;
 
+/* 用法：node _dev/preview.js [pitch] [yaw] [输出文件名]
+   pitch/yaw 单位是弧度。默认 0 0，即正面视角。 */
+const ARG_PITCH = parseFloat(process.argv[2] || '0') || 0;
+const ARG_YAW = parseFloat(process.argv[3] || '0') || 0;
+const OUT_NAME = process.argv[4] || 'heart_preview.png';
+
 /* ---------------- 迷你 Canvas2D ---------------- */
 function createCanvas(w, h) {
   const buf = new Float32Array(w * h * 4);   // 已合成的 RGB + A，0..1
@@ -211,7 +217,7 @@ const ambient = new sandbox.Ambient(cfg, rnd);
 for (let i = 0; i < 20 * 60; i++) ambient.update(1 / 60);
 
 ambient.render(ctx);
-heart.render(ctx, scale, 0.12);
+heart.render(ctx, scale, 0.12, { pitch: ARG_PITCH, yaw: ARG_YAW });
 flow.render(ctx);
 
 /* ---------------- 导出 PNG ---------------- */
@@ -221,7 +227,7 @@ for (let i = 0; i < W * H; i++) {
   out[i * 4 + 3] = 255;
 }
 const png = encodePNG(W, H, out);
-fs.writeFileSync(path.join(__dirname, 'heart_preview.png'), png);
+fs.writeFileSync(path.join(__dirname, OUT_NAME), png);
 
 /* ---------------- 文字版式诊断 ---------------- */
 const ys = flow.slots.map(s => s.y).sort((a, b) => a - b);
@@ -244,4 +250,5 @@ console.log('行距是否恒定:', uniq.length === 1 ? '是  gap=' + uniq[0] : '
 console.log('屏内(0..900)行数:', ys.filter(y => y >= 0 && y <= 900).length);
 console.log('alpha 曲线(自顶向下):', alphas.join(' '));
 console.log('前景文字框数:', ctx.textCalls.length);
-console.log('PNG ->', path.join(__dirname, 'heart_preview.png'), png.length, 'bytes');
+console.log('视角 pitch=' + ARG_PITCH.toFixed(2) + ' yaw=' + ARG_YAW.toFixed(2));
+console.log('PNG ->', path.join(__dirname, OUT_NAME), png.length, 'bytes');

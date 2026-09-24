@@ -24,6 +24,8 @@ ok(/id="scene"/.test(html), 'HTML 里有 id="scene"');
 const counts = { fill: 0, fillText: 0, arc: 0 };
 const canvasStub = {
   clientWidth: 800, clientHeight: 900, width: 0, height: 0,
+  addEventListener() {},
+  setPointerCapture() {},
   getContext() {
     return {
       setTransform() {}, save() {}, restore() {}, translate() {}, scale() {}, clearRect() {},
@@ -119,6 +121,38 @@ for (const [w, h, k] of [[1920, 1080, 1.2], [390, 844, 0.45], [1440, 900, 1.0], 
   ok(visible >= 6 && visible <= 8, '视口 ' + w + 'x' + h + '：屏上同时可见 ' + visible + ' 行（目标 6~8）');
   ok(f.size >= 16 && f.size <= c.text.scroll.maxSize + 0.001, '视口 ' + w + 'x' + h + '：字号 ' + f.size.toFixed(1) + 'px 可读');
 }
+
+/* 10. 3D：俯仰应产生纵向前缩，偏航应产生横向前缩，且粒子不多不少正好画一遍 */
+function renderBounds(pitch, yaw) {
+  const bb = { minX: 1e9, maxX: -1e9, minY: 1e9, maxY: -1e9, n: 0 };
+  const c = {
+    setTransform() {}, save() {}, restore() {}, translate() {}, scale() {}, clearRect() {},
+    beginPath() {}, moveTo() {}, fill() {}, fillStyle: '', globalAlpha: 1,
+    arc(x, y) {
+      if (x < bb.minX) bb.minX = x; if (x > bb.maxX) bb.maxX = x;
+      if (y < bb.minY) bb.minY = y; if (y > bb.maxY) bb.maxY = y;
+      bb.n++;
+    }
+  };
+  heart.render(c, 1.0, 0.12, { pitch, yaw });
+  bb.w = bb.maxX - bb.minX;
+  bb.h = bb.maxY - bb.minY;
+  return bb;
+}
+const front = renderBounds(0, 0);
+const pitched = renderBounds(0.7, 0);
+const yawed = renderBounds(0, 0.7);
+ok(isFinite(front.minX) && isFinite(front.maxY), '投影结果没有 NaN');
+ok(front.n === heart.count,
+   '正面视角下每个粒子恰好画一次（' + front.n + ' / ' + heart.count + '）');
+ok(pitched.h < front.h * 0.92,
+   '俯仰 0.7rad 纵向前缩：' + front.h.toFixed(0) + ' -> ' + pitched.h.toFixed(0));
+ok(pitched.w > front.w * 0.90,
+   '俯仰不改变横向跨度：' + pitched.w.toFixed(0));
+ok(yawed.w < front.w * 0.95,
+   '偏航 0.7rad 横向前缩：' + front.w.toFixed(0) + ' -> ' + yawed.w.toFixed(0));
+ok(yawed.h > front.h * 0.95,
+   '偏航不改变纵向跨度：' + yawed.h.toFixed(0));
 
 console.log(fail === 0 ? '\n全部通过 (' + 0 + ' 失败)' : '\n失败 ' + fail + ' 项');
 process.exit(fail ? 1 : 0);

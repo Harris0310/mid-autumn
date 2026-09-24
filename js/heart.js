@@ -248,9 +248,25 @@
     return r < 86 ? 1 : (r < 97 ? 2 : 3);
   };
 
-  HeartParticles.prototype._mk = function (x, y, c, a, flash) {
+  /* 半厚度剖面 T(s) = thickness · √(1 − s²)：中心最厚、轮廓收到 0。
+     于是正面看仍是原来那颗镂空的心，转起来才是一颗立体的中空心形。 */
+  HeartParticles.prototype._thick = function (s) {
+    var t = 1 - s * s;
+    return t > 0 ? this.H.depth.thickness * Math.sqrt(t) : 0;
+  };
+
+  /* 壳层取点：一半落正面、一半落背面，再乘一点厚度抖动，
+     避免正反两层薄成一张"纸片"。 */
+  HeartParticles.prototype._shellZ = function (s) {
+    var T = this._thick(s);
+    if (T <= 0) return 0;
+    var dir = this.rnd() < 0.5 ? 1 : -1;
+    return dir * T * (1 + (this.rnd() - 0.5) * 2 * this.H.depth.shellJitter);
+  };
+
+  HeartParticles.prototype._mk = function (x, y, z, c, a, flash) {
     return {
-      x: x, y: y, r: this._radius(), c: c, a: a,
+      x: x, y: y, z: z, r: this._radius(), c: c, a: a,
       flash: !!flash,
       flashSpd: 1.6 + this.rnd() * 2.6,
       flashPh: this.rnd() * TAU
@@ -293,7 +309,7 @@
       var s = this._frac(ux, uy);
       if (this.rnd() > (this._weightAt(s) / wmax) * tipFade) continue;
 
-      out.push(this._mk(ux, uy, this._color(1), 1, this.rnd() < H.flashRatio));
+      out.push(this._mk(ux, uy, this._shellZ(s), this._color(1), 1, this.rnd() < H.flashRatio));
     }
     return out;
   };
@@ -318,7 +334,10 @@
       else               d = g * 1.80;   /* 毛边飞散 */
 
       var hx = h[0] + nx * d * band, hy = h[1] + ny * d * band;
-      out.push(this._mk(hx * SX, -hy, this._color(0.92), 1, false));
+      /* 轮廓处的 s 基本是 1，T 自然趋近 0 —— 心形的"赤道"就落在 z=0 上，
+         这正是抱枕边缘该有的样子 */
+      out.push(this._mk(hx * SX, -hy, this._shellZ(this._frac(hx * SX, -hy)),
+                        this._color(0.92), 1, false));
     }
     return out;
   };
@@ -335,7 +354,12 @@
         var w = segs[k][1] - segs[k][0];
         if (w > best) { best = w; pick = k; }
       }
-      out.push(this._mk(segs[pick][0] + this.rnd() * best, uy, this._color(0.42), this.H.hazeAlpha, false));
+      /* 雾点只铺在厚度中间薄薄一层：让中空处不是死黑，
+         又不会在转动时把"镂空"糊成实心 */
+      var hx2 = segs[pick][0] + this.rnd() * best;
+      var Tz = this._thick(this._frac(hx2, uy)) * this.H.depth.hazeSpread;
+      out.push(this._mk(hx2, uy, (this.rnd() * 2 - 1) * Tz,
+                        this._color(0.42), this.H.hazeAlpha, false));
     }
     return out;
   };
@@ -346,14 +370,16 @@
     var all = this._genBody(L.body)
       .concat(this._genOutline(L.outline), this._genHaze(L.haze));
 
-    var E = this.H.enlarge, cx = this.H.cx, cy = this.H.cy;
+    /* 坐标统一存成「相对心中心的 3D 设计像素」三元组，
+       3D 旋转与透视都在 render 里逐点做。 */
+    var E = this.H.enlarge;
     var map = new Map();
     this.flashList = [];
 
     for (var i = 0; i < all.length; i++) {
       var p = all[i];
-      var bx = cx + p.x * E, by = cy + p.y * E;
-      p.bx = bx; p.by = by;
+      var bx = p.x * E, by = p.y * E, bz = p.z * E;
+      p.bx = bx; p.by = by; p.bz = bz;
 
       if (p.flash) { this.flashList.push(p); continue; }
 
@@ -361,7 +387,7 @@
       var key = p.r + '|' + (p.c[0] >> 4) + ',' + (p.c[1] >> 4) + ',' + (p.c[2] >> 4) + '|' + p.a;
       var b = map.get(key);
       if (!b) { b = { r: p.r, a: p.a, c: p.c, coords: [] }; map.set(key, b); }
-      b.coords.push(bx, by);
+      b.coords.push(bx, by, bz);
     }
 
     this.buckets = [];
@@ -374,45 +400,79 @@
     this.count = all.length;
   };
 
-  /* 绘制。scale = 心跳的等比缩放（1.0 为静息）。
+  /* 绘制。
+   *   scale —— 心跳的等比缩放（1.0 为静息）
+   *   view  —— 视角 { pitch, yaw }，单位弧度
    *
-   * 关于逐点抖动（config: heart.beat.jitter）：
-   *   原版每帧给每个点加 rand()%3-1 的随机偏移，整颗心会持续"沸腾"，
-   *   搏动时才不会像一张放大的静态图。代价是路径坐标不再静态，每帧要
-   *   重新提交约 8.7k 段圆弧（分桶结构仍在，fill 次数不变）。
-   *   把它设为 0 即可回到"坐标全静态、每帧只改一个缩放矩阵"的零开销路径。 */
-  HeartParticles.prototype.render = function (ctx, scale, timeSec) {
-    var H = this.H;
+   * 3D 完全在 JS 里逐点算：先按心跳放大，再绕 Y 轴（左右）、X 轴（上下）
+   * 旋转，最后做透视除法。粒子按深度分成 bands 档、由远及近绘制 ——
+   * 最远一档压低透明度，于是前后有了层次，近处的粒子也自然盖住远处的。
+   *
+   * 坐标系约定：x 向右、y 向下（心尖在 y>0）、z 向观察者为正。
+   *
+   * 关于逐点抖动（config: heart.beat.jitter）：原版每帧给每个点加
+   * rand()%3-1 的随机偏移，整颗心会持续"沸腾"，搏动时才不像一张放大的
+   * 静态图。代价是每帧要重新提交约 8.7k 段圆弧（分桶结构仍在，fill 次数
+   * 不变）。设为 0 可省下这部分开销。 */
+  HeartParticles.prototype.render = function (ctx, scale, timeSec, view) {
+    var H = this.H, D = H.depth;
     var jit = H.beat.jitter || 0;
     var rnd = this.rnd;
-    var i, k;
+
+    var pitch = view.pitch, yaw = view.yaw;
+    var cp = Math.cos(pitch), sp = Math.sin(pitch);
+    var cyw = Math.cos(yaw), syw = Math.sin(yaw);
+
+    var F = D.perspective;
+    var bands = D.bands;
+    var cx = H.cx, cy = H.cy;
+
+    /* 深度归一化基准。绕 X 轴旋转后，心形的"高度"也会投影进 z，
+       所以基准必须随俯仰角变化，否则分档会整体偏掉。 */
+    var zRef = (17.0 * Math.abs(sp) + D.thickness) * H.enlarge * scale;
+
+    var i, k, band, X, Y, Z, X1, Z1, Y1, Z2, tt, bd, pr, sx, sy, rr;
 
     ctx.save();
 
-    /* 心跳 = 绕心中心的等比缩放 */
-    ctx.translate(H.cx, H.cy);
-    ctx.scale(scale, scale);
-    ctx.translate(-H.cx, -H.cy);
+    for (band = 0; band < bands; band++) {
+      var bandAlpha = bands === 1 ? 1
+        : D.backAlpha + (1 - D.backAlpha) * (band / (bands - 1));
 
-    for (i = 0; i < this.buckets.length; i++) {
-      var b = this.buckets[i], co = b.coords;
-      ctx.globalAlpha = b.a;
-      ctx.fillStyle = b.color;
-      ctx.beginPath();
-      if (jit) {
-        for (k = 0; k < co.length; k += 2) {
-          var x = co[k] + (((rnd() * 3) | 0) - 1) * jit;
-          var y = co[k + 1] + (((rnd() * 3) | 0) - 1) * jit;
-          ctx.moveTo(x + b.r, y);   /* 断开上一段，避免连线 */
-          ctx.arc(x, y, b.r, 0, TAU);
+      for (i = 0; i < this.buckets.length; i++) {
+        var b = this.buckets[i], co = b.coords;
+        ctx.globalAlpha = b.a * bandAlpha;
+        ctx.fillStyle = b.color;
+        ctx.beginPath();
+        var n = 0;
+
+        for (k = 0; k < co.length; k += 3) {
+          X = co[k] * scale; Y = co[k + 1] * scale; Z = co[k + 2] * scale;
+
+          X1 = X * cyw + Z * syw;      /* 绕 Y 轴：左右 */
+          Z1 = Z * cyw - X * syw;
+          Y1 = Y * cp - Z1 * sp;       /* 绕 X 轴：上下 */
+          Z2 = Y * sp + Z1 * cp;
+
+          tt = (Z2 / zRef + 1) * 0.5;
+          bd = tt <= 0 ? 0 : (tt >= 1 ? bands - 1 : (tt * bands) | 0);
+          if (bd !== band) continue;   /* 不属于本档 */
+
+          pr = F / (F - Z2);           /* 透视：Z2 > 0 更靠近观察者 */
+          sx = cx + X1 * pr;
+          sy = cy + Y1 * pr;
+          if (jit) {
+            sx += (((rnd() * 3) | 0) - 1) * jit;
+            sy += (((rnd() * 3) | 0) - 1) * jit;
+          }
+          rr = b.r * pr * scale;
+          ctx.moveTo(sx + rr, sy);     /* 断开上一段，避免连线 */
+          ctx.arc(sx, sy, rr, 0, TAU);
+          n++;
         }
-      } else {
-        for (k = 0; k < co.length; k += 2) {
-          ctx.moveTo(co[k] + b.r, co[k + 1]);
-          ctx.arc(co[k], co[k + 1], b.r, 0, TAU);
-        }
+
+        if (n) ctx.fill();             /* 本档没有粒子就整个跳过 */
       }
-      ctx.fill();
     }
 
     /* 会呼吸闪烁的粒子：数量少（默认 3.5%），逐颗单独绘制 */
@@ -421,12 +481,22 @@
       ctx.globalAlpha = 1;
       for (i = 0; i < fl.length; i++) {
         var p = fl[i];
+        X = p.bx * scale; Y = p.by * scale; Z = p.bz * scale;
+        X1 = X * cyw + Z * syw;
+        Z1 = Z * cyw - X * syw;
+        Y1 = Y * cp - Z1 * sp;
+        Z2 = Y * sp + Z1 * cp;
+        pr = F / (F - Z2);
+        sx = cx + X1 * pr;
+        sy = cy + Y1 * pr;
+        if (jit) {
+          sx += (((rnd() * 3) | 0) - 1) * jit;
+          sy += (((rnd() * 3) | 0) - 1) * jit;
+        }
         var kk = 0.58 + 0.42 * (0.5 + 0.5 * Math.sin(timeSec * p.flashSpd + p.flashPh));
         ctx.fillStyle = 'rgb(' + (p.c[0] * kk | 0) + ',' + (p.c[1] * kk | 0) + ',' + (p.c[2] * kk | 0) + ')';
-        var fx = p.bx, fy = p.by;
-        if (jit) { fx += (((rnd() * 3) | 0) - 1) * jit; fy += (((rnd() * 3) | 0) - 1) * jit; }
         ctx.beginPath();
-        ctx.arc(fx, fy, p.r, 0, TAU);
+        ctx.arc(sx, sy, p.r * pr * scale, 0, TAU);
         ctx.fill();
       }
     }

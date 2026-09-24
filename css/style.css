@@ -9,6 +9,8 @@ html, body {
   height: 100%;
   overflow: hidden;
   background: #07050b;
+  /* 手机上拖动爱心时不要触发下拉刷新 / 橡皮筋滚动 */
+  overscroll-behavior: none;
 }
 
 body {
@@ -31,7 +33,15 @@ body {
   height: 100%;
   /* canvas 自身透明，透出 body 的夜色渐变 */
   background: transparent;
+  /* 视角拖动的关键：把触摸手势完全交给 pointer 事件，浏览器不要接手 */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  cursor: grab;
 }
+
+#scene:active { cursor: grabbing; }
 
 .fallback {
   position: absolute;
