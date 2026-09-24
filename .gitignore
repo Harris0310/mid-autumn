@@ -1,0 +1,23 @@
+# 系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+
+# 依赖与日志
+node_modules/
+*.log
+
+# 截图 / 调试产物
+shot*.png
+beat_shot_*.png
+preview_*.png
+ver_*.txt
+
+# 本地开发辅助（离线预览生成的图不入库）
+_dev/*.png
+_edgeprof*/

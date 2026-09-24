@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0b0710" />
+<meta name="description" content="中秋祝福 · 镂空跳动爱心与流动的字" />
+<title>中秋 · 但愿人长久</title>
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <main class="stage">
+    <canvas id="scene" role="img"
+            aria-label="中秋祝福动画：一颗镂空跳动的心，字从心中升起，下方是流动的祝福语"></canvas>
+    <noscript>
+      <p class="fallback">请开启 JavaScript 以查看中秋祝福动画。</p>
+    </noscript>
+  </main>
+
+  <!-- 顺序固定：config 最先，main 最后 -->
+  <script src="js/config.js"></script>
+  <script src="js/heart.js"></script>
+  <script src="js/flowtext.js"></script>
+  <script src="js/ambient.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>

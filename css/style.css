@@ -1,0 +1,50 @@
+/* ============================================================================
+ * style.css —— 只负责页面外壳，动画全部在 canvas 里
+ * ========================================================================== */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #07050b;
+}
+
+body {
+  /* 深空夜色 + 心口一点暖光，衬托镂空心的中空处 */
+  background:
+    radial-gradient(circle at 50% 42%, #2a0d1c 0%, #150a17 34%, #0a0710 62%, #060409 100%);
+  font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.stage {
+  position: fixed;
+  inset: 0;
+  display: block;
+}
+
+#scene {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* canvas 自身透明，透出 body 的夜色渐变 */
+  background: transparent;
+}
+
+.fallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #f3d9a4;
+  font-size: 18px;
+  letter-spacing: 0.08em;
+}
+
+/* 尊重系统的「减少动态效果」设置：由 main.js 停止逐帧动画 */
+@media (prefers-reduced-motion: reduce) {
+  #scene { opacity: 1; }
+}
