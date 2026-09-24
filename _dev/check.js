@@ -136,8 +136,10 @@ ok(heart.buckets.length < 900, '颜色桶 = ' + heart.buckets.length + '（即�
 const rnd = sb.MoonfestRandom(1);
 const SL = c.text.scroll;
 
-ok(SL.crossSeconds <= 1.2,
-   '穿屏用时 ' + SL.crossSeconds + 's（原单列字幕一行约 10s，即约 10 倍速）');
+/* 速度是用户的口味，改过好几次（1.0 → 0.75 → 1.0 → 2.0），所以这里只守量程：
+   太快看不清、太慢就成了慢动作。确切数值由 browsercheck 在真浏览器里实测。 */
+ok(SL.crossSeconds >= 0.4 && SL.crossSeconds <= 3,
+   '穿屏用时 ' + SL.crossSeconds + 's 在量程内（0.4~3s）');
 ok(SL.density >= 6, '目标密度 ' + SL.density + ' 条/屏');
 
 for (const [w, h, k] of [[1920, 1080, 1.2], [390, 844, 0.45], [1440, 900, 1.0], [2560, 1440, 1.6]]) {
