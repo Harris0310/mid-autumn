@@ -30,6 +30,7 @@
     this.size = 0; this.speed = 0; this.top = 0;
     this.vh = 0; this.cx = 0;
     this.gapMin = 0; this.gapMax = 0;
+    this.reveal = 1;   /* 整体显现进度 0~1，由 main.js 在拆封过渡时驱动 */
   }
 
   /* 字号 = 设计字号 × 缩放比，但夹在 [视口高度 × minViewportRatio, maxSize]
@@ -146,7 +147,7 @@
   /* 在视口坐标系下绘制（调用前 main.js 已把变换设成 CSS 像素） */
   FlowText.prototype.render = function (ctx) {
     var sc = this.sc;
-    if (!sc.enabled || !this.slots.length) return;
+    if (!sc.enabled || !this.slots.length || this.reveal <= 0.01) return;
 
     ctx.save();
     ctx.textAlign = 'center';
@@ -162,7 +163,7 @@
       if (a <= 0.01) continue;
 
       var w = ctx.measureText(s.text).width;
-      ctx.globalAlpha = a;
+      ctx.globalAlpha = a * this.reveal;
       ctx.fillStyle = this._sheen(ctx, this.cx - w / 2, this.cx + w / 2, s.phase);
       ctx.fillText(s.text, this.cx, s.y);
     }

@@ -29,8 +29,16 @@
   var heart = new window.HeartParticles(cfg);
   var flow = new window.FlowText(cfg, rnd);
   var ambient = new window.Ambient(cfg, rnd);
+  var env = cfg.envelope.enabled ? new window.Envelope(cfg) : null;
 
   var view = { dpr: 1, k: 1, ox: 0, oy: 0, w: 0, h: 0 };
+
+  /* ==========================================================================
+   * 场景：envelope(等拆封) -> opening(拆封中) -> heart(主场景)
+   * reveal 是主场景的显现进度，拆封过渡的后半段由它驱动
+   * ======================================================================== */
+  var scene = env ? 'envelope' : 'heart';
+  var reveal = env ? 0 : 1;
 
   /* ==========================================================================
    * 视角状态
@@ -63,7 +71,7 @@
     orbit.vpitch = dpitch;
   }
 
-  function onDown(e) {
+  function startDrag(e) {
     orbit.dragging = true;
     orbit.idle = 0;
     orbit.vyaw = 0;
@@ -75,42 +83,58 @@
     }
   }
 
-  function onMove(e) {
+  function moveDrag(e) {
     if (!orbit.dragging) return;
     applyDrag(e.clientX - orbit.lastX, e.clientY - orbit.lastY);
     orbit.lastX = e.clientX;
     orbit.lastY = e.clientY;
   }
 
-  function onUp() {
+  function endDrag() {
     if (!orbit.dragging) return;
     orbit.dragging = false;
     orbit.idle = 0;
+  }
+
+  /* 指针事件先看场景：还在信封上，点一下就是拆封 */
+  function handleDown(e) {
+    if (scene === 'envelope') {
+      env.start();
+      scene = 'opening';
+      return;
+    }
+    if (scene === 'heart') startDrag(e);
+  }
+  function handleMove(e) {
+    if (scene === 'heart') moveDrag(e);
+  }
+  function handleUp() {
+    if (scene === 'heart') endDrag();
   }
 
   function bindOrbit() {
     if (!O.enabled || !canvas.addEventListener) return;
 
     if (window.PointerEvent) {
-      canvas.addEventListener('pointerdown', onDown);
-      canvas.addEventListener('pointermove', onMove);
-      canvas.addEventListener('pointerup', onUp);
-      canvas.addEventListener('pointercancel', onUp);
+      canvas.addEventListener('pointerdown', handleDown);
+      canvas.addEventListener('pointermove', handleMove);
+      canvas.addEventListener('pointerup', handleUp);
+      canvas.addEventListener('pointercancel', handleUp);
       return;
     }
 
     /* 兜底：部分较老的 WebView（比如某些安卓微信内核）没有 PointerEvent，
        退回 touch 事件，保证链接分享出去以后还是一样能拖着转。 */
     canvas.addEventListener('touchstart', function (e) {
-      if (e.touches.length === 1) onDown(e.touches[0]);
+      if (e.touches.length === 1) handleDown(e.touches[0]);
     }, { passive: true });
     canvas.addEventListener('touchmove', function (e) {
       if (e.touches.length !== 1) return;
-      onMove(e.touches[0]);
+      handleMove(e.touches[0]);
       if (e.cancelable) e.preventDefault();
     }, { passive: false });
-    canvas.addEventListener('touchend', onUp);
-    canvas.addEventListener('touchcancel', onUp);
+    canvas.addEventListener('touchend', handleUp);
+    canvas.addEventListener('touchcancel', handleUp);
   }
 
   function updateOrbit(dt) {
@@ -178,13 +202,41 @@
     designTransform();
     ambient.render(ctx);
 
-    /* 心跳 -> 绕心中心的等比缩放（节奏由 config.heart.beat.mode 决定） */
-    var scale = window.HeartParticles.beatScale(timeSec, H.beat);
-    heart.render(ctx, scale, timeSec, currentView(timeSec));
+    /* 显现缓动：easeOutCubic */
+    var e = reveal <= 0 ? 0 : (reveal >= 1 ? 1 : 1 - Math.pow(1 - reveal, 3));
+
+    /* 还没显现时干脆不画爱心，省电（信封可能被盯很久才点） */
+    if (e > 0) {
+      var beat = window.HeartParticles.beatScale(timeSec, H.beat);
+      heart.render(ctx, beat * (0.42 + 0.58 * e), timeSec, currentView(timeSec));
+    }
 
     /* 视口层：1 单位 = 1 CSS 像素 */
     ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
+    flow.reveal = e;
     flow.render(ctx);
+
+    /* 信封最后画，压在所有东西之上 */
+    if (env && scene !== 'heart') {
+      designTransform();
+      env.render(ctx);
+    }
+  }
+
+  /* 推进拆封进度 */
+  function updateScene(dt) {
+    if (!env) return;
+    if (scene === 'envelope') {
+      env.update(dt);                       /* 只推进入场与待机脉动 */
+      return;
+    }
+    if (scene !== 'opening') return;
+
+    env.update(dt);
+    var E = cfg.envelope;
+    var u = (env.progress - E.revealStart) / (1 - E.revealStart);
+    reveal = u <= 0 ? 0 : (u >= 1 ? 1 : u);
+    if (env.done) { scene = 'heart'; reveal = 1; }
   }
 
   /* ==========================================================================
@@ -193,9 +245,12 @@
   bindOrbit();
 
   /* ---------- 静帧模式：?t=秒 ---------- */
+  /* ?open=1 跳过信封直接进主场景；?t= 静帧模式同理 */
   var frozen = /[?&]t=([0-9.]+)/.exec(window.location.search);
+  if (/[?&]open=1/.test(window.location.search)) { scene = 'heart'; reveal = 1; }
   if (frozen) {
     var target = parseFloat(frozen[1]) || 0;
+    scene = 'heart'; reveal = 1;
     orbit.sway = 0;                 /* 静帧不要摆动，便于逐帧比对 */
     resize();
     var acc = 0, step = 1 / 60;
@@ -218,7 +273,8 @@
   resize();
 
   if (reduce) {
-    orbit.sway = 0;   /* 尊重系统设置：只呈现一帧，也不自动摆动 */
+    orbit.sway = 0;                       /* 尊重系统设置：不自动摆动 */
+    if (env) env.animateIdle = false;     /* 也不做待机呼吸与脉动 */
     draw(0.12);
     return;
   }
@@ -232,6 +288,7 @@
     flow.update(dt);
     ambient.update(dt);
     updateOrbit(dt);
+    updateScene(dt);
     draw(t);
     window.requestAnimationFrame(frame);
   }

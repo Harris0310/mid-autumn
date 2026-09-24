@@ -15,13 +15,13 @@ for (const m of html.matchAll(/(?:src|href)="([^"]+)"/g)) {
 
 /* 2. 加载顺序 */
 const scripts = [...html.matchAll(/<script src="([^"]+)"/g)].map(m => m[1]);
-ok(scripts.length === 5, '脚本数量 = 5（实际 ' + scripts.length + '）');
+ok(scripts.length === 6, '脚本数量 = 6（实际 ' + scripts.length + '）');
 ok(scripts[0].endsWith('config.js'), 'config.js 最先加载');
 ok(scripts[scripts.length - 1].endsWith('main.js'), 'main.js 最后加载');
 ok(/id="scene"/.test(html), 'HTML 里有 id="scene"');
 
 /* 3. 迷你 DOM：让 main.js 走 ?t= 静帧分支并真的画一帧 */
-const counts = { fill: 0, fillText: 0, arc: 0 };
+const counts = { fill: 0, fillText: 0, arc: 0, stroke: 0 };
 const canvasStub = {
   clientWidth: 800, clientHeight: 900, width: 0, height: 0,
   addEventListener() {},
@@ -29,11 +29,12 @@ const canvasStub = {
   getContext() {
     return {
       setTransform() {}, save() {}, restore() {}, translate() {}, scale() {}, clearRect() {},
-      beginPath() {}, moveTo() {}, arc() { counts.arc++; }, fill() { counts.fill++; },
+      beginPath() {}, moveTo() {}, lineTo() {}, arcTo() {}, closePath() {}, setLineDash() {},
+      arc() { counts.arc++; }, fill() { counts.fill++; }, stroke() { counts.stroke++; },
       measureText: t => ({ width: [...t].length * 30 }),
       fillText() { counts.fillText++; },
       createLinearGradient: () => ({ addColorStop() {} }),
-      fillStyle: '', font: '', textAlign: '', textBaseline: '',
+      fillStyle: '', strokeStyle: '', lineWidth: 1, font: '', textAlign: '', textBaseline: '',
       shadowColor: '', globalAlpha: 1, shadowBlur: 0
     };
   }
@@ -167,6 +168,42 @@ ok(yawed.w < front.w * 0.95,
    '偏航 0.7rad 横向前缩：' + front.w.toFixed(0) + ' -> ' + yawed.w.toFixed(0));
 ok(yawed.h > front.h * 0.95,
    '偏航不改变纵向跨度：' + yawed.h.toFixed(0));
+
+/* 11. 开场信封：拆封各阶段都能画出来，进度能收敛到完成 */
+ok(typeof sb.Envelope === 'function', 'window.Envelope 已导出');
+ok(c.envelope.enabled === true, '信封默认启用');
+ok(c.envelope.text === '有一份中秋节礼物等待查收', '信封文案正确');
+
+const ec = { fill: 0, stroke: 0, text: [] };
+const envCtx = {
+  setTransform() {}, save() {}, restore() {}, translate() {}, scale() {},
+  beginPath() {}, moveTo() {}, lineTo() {}, arcTo() {}, closePath() {}, setLineDash() {},
+  fill() { ec.fill++; }, stroke() { ec.stroke++; }, arc() {},
+  fillText(t) { ec.text.push(t); },
+  measureText: t => ({ width: [...t].length * c.envelope.textSize }),
+  createLinearGradient: () => ({ addColorStop() {} }),
+  fillStyle: '', strokeStyle: '', lineWidth: 1, font: '', textAlign: '', textBaseline: '',
+  shadowColor: '', globalAlpha: 1, shadowBlur: 0
+};
+
+const env = new sb.Envelope(c);
+let envOk = true;
+try {
+  env.render(envCtx);                                    /* 未拆封 */
+  env.start();
+  for (const dt of [0.05, 0.2, 0.3, 0.4, 0.5, 0.6]) { env.update(dt); env.render(envCtx); }
+  env.update(5); env.render(envCtx);                     /* 收尾 */
+} catch (e) { envOk = false; console.log('  信封渲染抛错: ' + e.message); }
+ok(envOk, '拆封全程渲染无异常（含未拆封 / 拆封中 / 已拆完）');
+ok(env.done === true, '拆封动画能走到完成');
+ok(env.progress === 1, '进度封顶到 1，不会溢出');
+ok(ec.fill > 10 && ec.stroke > 0, '信封确实画出了图元（fill=' + ec.fill + ' stroke=' + ec.stroke + '）');
+ok(ec.text.indexOf(c.envelope.text) >= 0, '信封上的文案被绘制');
+
+/* 不启用信封时必须能直接进主场景（main.js 的 scene 初值是 heart） */
+const c2 = JSON.parse(JSON.stringify(c));
+c2.envelope.enabled = false;
+ok(c2.envelope.enabled === false, 'envelope.enabled=false 的配置路径存在');
 
 console.log(fail === 0 ? '\n全部通过 (' + 0 + ' 失败)' : '\n失败 ' + fail + ' 项');
 process.exit(fail ? 1 : 0);

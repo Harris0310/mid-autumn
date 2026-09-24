@@ -1,7 +1,10 @@
 'use strict';
-/* _dev/browsercheck.js —— 用真实浏览器（Edge headless + CDP）量帧率、看手机版式
+/* _dev/browsercheck.js —— 真实浏览器（Edge headless + CDP）验收
+ *   1) 手机视口下量帧率
+ *   2) 采集「信封 -> 拆封 -> 主场景」整条流程的截图
+ *   3) 模拟拖动，确认视角真的会转
  * 开发辅助，不参与页面发布。用法：node _dev/browsercheck.js
- * 注意：这里刻避免使用模板字符串，以免与外部包装冲突。
+ * 注意：刻意不使用模板字符串。
  */
 const { spawn } = require('child_process');
 const http = require('http');
@@ -10,7 +13,7 @@ const path = require('path');
 const os = require('os');
 
 const EDGE = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
-const PORT = 9333;
+const PORT = 9334;
 const ROOT = path.resolve(__dirname, '..');
 
 const parts = path.join(ROOT, 'index.html').replace(/\\/g, '/').split('/');
@@ -32,7 +35,7 @@ function getJson(url) {
   });
 }
 
-(async function () {
+(function () {
   const profile = path.join(os.tmpdir(), 'edge_bc_' + Date.now());
   const child = spawn(EDGE, [
     '--headless=new', '--disable-gpu', '--no-sandbox', '--no-first-run',
@@ -41,7 +44,7 @@ function getJson(url) {
     '--remote-allow-origins=*',
     '--user-data-dir=' + profile,
     '--remote-debugging-port=' + PORT,
-    '--window-size=800,900',
+    '--window-size=390,844',
     FILE_URL
   ], { stdio: 'ignore' });
 
@@ -55,18 +58,18 @@ function getJson(url) {
       ws.send(JSON.stringify({ id: mid, method: method, params: params || {} }));
       setTimeout(function () {
         if (pending.has(mid)) { pending.delete(mid); reject(new Error('CDP timeout: ' + method)); }
-      }, 30000);
+      }, 40000);
     });
   }
 
-  try {
+  async function run() {
     let target = null;
     for (let i = 0; i < 40 && !target; i++) {
       await sleep(500);
       try {
         const list = await getJson('http://127.0.0.1:' + PORT + '/json/list');
         target = list.filter(function (t) { return t.type === 'page' && t.webSocketDebuggerUrl; })[0];
-      } catch (e) { /* 浏览器还没起来 */ }
+      } catch (e) {}
     }
     if (!target) throw new Error('连不上浏览器调试端口');
 
@@ -87,52 +90,67 @@ function getJson(url) {
 
     await send('Page.enable');
     await send('Runtime.enable');
-    await sleep(1500);
+    await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
+    await sleep(2000);
 
     async function evaluate(expr) {
       const r = await send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true });
-      if (r.exceptionDetails) throw new Error(r.exceptionDetails.text);
+      if (r.exceptionDetails) throw new Error(r.exceptionDetails.text + ' | ' + (r.exceptionDetails.exception && r.exceptionDetails.exception.description));
       return r.result.value;
     }
 
-    function fpsExpr(ms) {
-      return 'new Promise(function(res){' +
-        'var n=0,t0=performance.now(),worst=0,last=t0;' +
-        'function tick(now){' +
-        'n++;var dt=now-last;last=now;' +
-        'if(n>1&&dt>worst)worst=dt;' +
-        'if(now-t0<' + ms + ')requestAnimationFrame(tick);' +
-        'else res(JSON.stringify({frames:n,ms:Math.round(now-t0),fps:+(n/((now-t0)/1000)).toFixed(1),worstMs:+worst.toFixed(1)}));' +
-        '}requestAnimationFrame(tick);})';
+    async function shot(name) {
+      const s = await send('Page.captureScreenshot', { format: 'png' });
+      fs.writeFileSync(path.join(__dirname, name), Buffer.from(s.data, 'base64'));
     }
 
-    console.log('页面环境: ' + await evaluate('JSON.stringify({dpr:window.devicePixelRatio,w:innerWidth,h:innerHeight,cw:document.getElementById("scene").width,ch:document.getElementById("scene").height,pointer:!!window.PointerEvent})'));
-    console.log('桌面 800x900（软件渲染，最坏情况）: ' + await evaluate(fpsExpr(4000)));
+    /* 页面里有没有抛错？ */
+    const errs = await evaluate('window.__errs ? JSON.stringify(window.__errs) : "无"');
+    console.log('页面错误: ' + errs);
 
-    await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
-    await sleep(1500);
-    console.log('手机 390x844 @3x         : ' + await evaluate(fpsExpr(4000)));
+    console.log('环境: ' + await evaluate('JSON.stringify({w:innerWidth,h:innerHeight,dpr:devicePixelRatio,pointer:!!window.PointerEvent})'));
 
-    const shot = await send('Page.captureScreenshot', { format: 'png' });
-    fs.writeFileSync(path.join(__dirname, 'phone.png'), Buffer.from(shot.data, 'base64'));
+    await shot('sc1_envelope.png');
+    console.log('1) 信封封面 -> _dev/sc1_envelope.png');
 
+    /* 点一下：拆封 */
+    await evaluate('(function(){var c=document.getElementById("scene");' +
+      'c.dispatchEvent(new PointerEvent("pointerdown",{clientX:195,clientY:500,pointerId:1,bubbles:true,cancelable:true}));' +
+      'c.dispatchEvent(new PointerEvent("pointerup",{clientX:195,clientY:500,pointerId:1,bubbles:true,cancelable:true}));' +
+      'return "tapped";})()');
+
+    await sleep(400); await shot('sc2_opening.png');
+    console.log('2) 拆封中(0.4s) -> _dev/sc2_opening.png');
+    await sleep(450); await shot('sc3_letter.png');
+    console.log('3) 信纸升起(0.85s) -> _dev/sc3_letter.png');
+    await sleep(1800); await shot('sc4_heart.png');
+    console.log('4) 主场景 -> _dev/sc4_heart.png');
+
+    /* 帧率（主场景，软件渲染的最坏情况） */
+    const fpsExpr = 'new Promise(function(res){var n=0,t0=performance.now(),worst=0,last=t0;' +
+      'function tick(now){n++;var dt=now-last;last=now;if(n>1&&dt>worst)worst=dt;' +
+      'if(now-t0<4000)requestAnimationFrame(tick);' +
+      'else res(JSON.stringify({frames:n,fps:+(n/((now-t0)/1000)).toFixed(1),worstMs:+worst.toFixed(1)}));}' +
+      'requestAnimationFrame(tick);})';
+    console.log('手机 390x844 主场景帧率: ' + await evaluate(fpsExpr));
+
+    /* 拖动转视角 */
     await evaluate('(function(){var c=document.getElementById("scene");' +
       'function pe(t,x,y){c.dispatchEvent(new PointerEvent(t,{clientX:x,clientY:y,pointerId:1,bubbles:true,cancelable:true}));}' +
-      'pe("pointerdown",195,560);' +
-      'for(var i=1;i<=24;i++)pe("pointermove",195,560-i*7);' +
-      'pe("pointerup",195,392);return "ok";})()');
-    await sleep(400);
-    const shot2 = await send('Page.captureScreenshot', { format: 'png' });
-    fs.writeFileSync(path.join(__dirname, 'phone_dragged.png'), Buffer.from(shot2.data, 'base64'));
+      'pe("pointerdown",195,560);for(var i=1;i<=24;i++)pe("pointermove",195,560-i*7);pe("pointerup",195,392);return "ok";})()');
+    await sleep(500);
+    await shot('sc5_dragged.png');
+    console.log('5) 拖动后 -> _dev/sc5_dragged.png');
 
-    console.log('截图 -> _dev/phone.png, _dev/phone_dragged.png');
-    console.log('真实浏览器检查完成');
-  } catch (e) {
-    console.log('失败: ' + e.message);
-  } finally {
+    console.log('验收完成');
+  }
+
+  run().catch(function (e) { console.log('失败: ' + e.message); }).then(function () {
     try { if (ws) ws.close(); } catch (e) {}
     try { child.kill(); } catch (e) {}
-    await sleep(600);
-    try { fs.rmSync(profile, { recursive: true, force: true }); } catch (e) {}
-  }
+    setTimeout(function () {
+      try { fs.rmSync(profile, { recursive: true, force: true }); } catch (e) {}
+      process.exit(0);
+    }, 800);
+  });
 })();

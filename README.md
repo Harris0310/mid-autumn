@@ -1,7 +1,7 @@
 # 中秋 · 镂空跳动爱心
 
-一个纯静态的中秋祝福页面：**可以转着看的 3D 镂空跳动爱心** + **自下而上流动的字**。
-无构建、无依赖，双击 `index.html` 即可运行。
+一个纯静态的中秋祝福页面：**拆开一封白色信封** → 露出一颗**可以转着看的
+3D 镂空跳动爱心** + **自下而上流动的字**。无构建、无依赖，双击 `index.html` 即可运行。
 
 ## 本地看效果（开发用）
 
@@ -12,6 +12,24 @@ python -m http.server 8080   # 然后访问 http://localhost:8080
 ```
 
 调试用：网址后加 `?t=1.2` 可把画面冻结在第 1.2 秒，方便截图核对。
+
+## 开场信封
+
+打开链接先是**一封白色信封**，正中一枚爱心封蜡，下面一行字
+「有一份中秋节礼物等待查收」。**轻触屏幕任意位置**即可拆封：
+
+1. 封蜡爱心放大淡出（"破封"）
+2. 封盖绕上边缘翻开
+3. 信纸从里面升起来
+4. 整封信放大淡出，同时主场景从中心长出来
+
+封盖的翻开没有用真 3D，而是「绕上边缘旋转」的投影：三角形顶点相对上边缘的
+偏移量乘以 `cos(角度)`。角度从 0 转到 π，偏移就由 `+flapH` 经 0 变成
+`-flapH` —— 正好是"先压平、再向上翻起"。
+
+文案、信封尺寸、各段时间轴都在 `js/config.js` 的 `envelope` 段里。
+不想要信封就把 `envelope.enabled` 设成 `false`，会直接进爱心场景。
+想让某个链接跳过信封，网址后加 `?open=1`。
 
 ## 发给别人（微信 / 短信）
 
@@ -86,6 +104,10 @@ pool: ['但愿人长久', '千里共婵娟', /* ... */],
 | `heart.beat.jitter` | 逐点抖动强度，设 0 关闭以省性能 |
 | `heart.enlarge` / `layers` / `profile` | 爱心大小、粒子密度、镂空程度与配色 |
 | `heart.cx` / `cy` | 爱心在设计画布中的位置 |
+| `envelope.enabled` | 关掉就跳过信封直接进爱心 |
+| `envelope.text` | 信封上那行字 |
+| `envelope.duration` / `sealPhase` / `flapStart` / `flapEnd` | 拆封节奏 |
+| `envelope.exitStart` / `exitScale` / `revealStart` | 淡出与主场景显现的时机 |
 | `heart.depth.thickness` | 3D 半厚度：调大更"胖"，0 就退回平面 |
 | `heart.depth.perspective` | 透视焦距，调小透视更夸张 |
 | `heart.depth.bands` / `backAlpha` | 深度分档数与背面暗度（前后层次） |
@@ -104,7 +126,8 @@ js/config.js        ★ 唯一配置入口（文案在这里）
 js/heart.js         镂空跳动爱心：粒子引擎 + 双脉冲心跳
 js/flowtext.js      流动的字：固定槽位的自下而上字幕
 js/ambient.js       背景星点与微尘
-js/main.js          启动、视口适配、主循环
+js/envelope.js      开场信封：封蜡 / 翻盖 / 信纸 / 淡出
+js/main.js          启动、视口适配、场景切换与主循环
 _dev/preview.js     开发辅助：离线把画面渲染成 PNG（无需浏览器）
 _dev/browsercheck.js 开发辅助：真实浏览器量帧率 + 手机版式截图 + 模拟拖动
 _dev/check.js       开发辅助：一致性 / 几何 / 3D 断言
